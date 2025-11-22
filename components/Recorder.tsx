@@ -217,11 +217,13 @@ const Recorder: React.FC<RecorderProps> = ({
   return (
     <div className="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-slate-100 p-6 md:p-8 flex flex-col items-center transition-all duration-300 hover:shadow-2xl">
       
-      {!isRecording && !isMobile && (
-        <div className="w-full mb-6">
+      {/* Source Selection - Now visually disabled instead of removed when recording */}
+      {!isMobile && (
+        <div className={`w-full mb-6 transition-opacity duration-300 ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
           <div className="flex bg-slate-100 p-1 rounded-lg w-full">
             <button
               onClick={() => setAudioSource('microphone')}
+              disabled={isRecording}
               className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
                 audioSource === 'microphone' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
               }`}
@@ -231,6 +233,7 @@ const Recorder: React.FC<RecorderProps> = ({
             </button>
             <button
               onClick={() => setAudioSource('system')}
+              disabled={isRecording}
               className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
                 audioSource === 'system' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
               }`}

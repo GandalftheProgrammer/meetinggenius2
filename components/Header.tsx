@@ -23,20 +23,21 @@ const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive }) => 
         <div className="flex items-center gap-3">
             <button 
                 onClick={onConnectDrive}
-                className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium border transition-all shadow-sm ${
+                disabled={isDriveConnected}
+                className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold border transition-all shadow-sm ${
                     isDriveConnected 
-                    ? 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100' 
-                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    ? 'bg-green-100 border-green-200 text-green-700 cursor-default' 
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
                 }`}
                 title={isDriveConnected ? "Connected to Google Drive" : "Connect to Google Drive to save notes automatically"}
             >
                 {isDriveConnected ? (
-                    <CheckCircle2 className="w-4 h-4" />
+                    <CheckCircle2 className="w-5 h-5" />
                 ) : (
                     <img 
                         src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg" 
                         alt="Google Drive" 
-                        className="w-4 h-4"
+                        className="w-5 h-5"
                     />
                 )}
                 <span className="hidden md:inline">{isDriveConnected ? 'Drive Connected' : 'Connect Drive'}</span>
