@@ -5,7 +5,8 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   define: {
-    // Expose env variables to the client
-    'process.env': process.env
+    // SECURITY: Do NOT expose process.env here. 
+    // Only expose specific safe variables if needed.
+    // The API_KEY will now be hidden in the Netlify backend.
   }
 });
