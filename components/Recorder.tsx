@@ -168,7 +168,27 @@ const Recorder: React.FC<RecorderProps> = ({
   const isProcessing = appState === AppState.PROCESSING;
   const hasRecordedData = audioUrl !== null;
 
-  // Use same max-width for both states to prevent jumping
+  // Helper to render logs with links
+  const renderLog = (log: string) => {
+    if (log.includes('http')) {
+      const parts = log.split(/(https?:\/\/[^\s]+)/g);
+      return (
+        <span>
+          {parts.map((part, i) => 
+            part.match(/^https?:\/\//) ? (
+              <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline hover:text-blue-300">
+                {part.includes('drive.google') ? 'View File' : 'Link'}
+              </a>
+            ) : (
+              part
+            )
+          )}
+        </span>
+      );
+    }
+    return log;
+  };
+
   if (isProcessing) {
     return (
       <div className="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-slate-100 p-8 flex flex-col items-center">
@@ -185,7 +205,7 @@ const Recorder: React.FC<RecorderProps> = ({
            <div className="w-full bg-slate-900 text-slate-300 p-3 rounded-lg text-xs font-mono max-h-32 overflow-y-auto custom-scrollbar">
               {debugLogs.map((log, i) => (
                 <div key={i} className="border-b border-slate-800 last:border-0 py-1">
-                  {log}
+                  {renderLog(log)}
                 </div>
               ))}
            </div>
@@ -261,7 +281,9 @@ const Recorder: React.FC<RecorderProps> = ({
           {isRecording ? (
             <Square className="w-8 h-8 text-white fill-current" />
           ) : (
-            audioSource === 'system' ? <MonitorPlay className="w-8 h-8 text-white" /> : <Circle className="w-8 h-8 text-white fill-current" />
+            audioSource === 'system' ? 
+              <MonitorPlay className="w-8 h-8 text-white" /> : 
+              <Circle className="w-8 h-8 text-white fill-current" />
           )}
         </button>
         
@@ -309,7 +331,7 @@ const Recorder: React.FC<RecorderProps> = ({
              <div className="w-full mt-4 bg-slate-50 text-slate-400 p-2 rounded border border-slate-100 text-[10px] font-mono max-h-20 overflow-y-auto custom-scrollbar">
                 {debugLogs.map((log, i) => (
                   <div key={i} className="border-b border-slate-200 last:border-0 py-0.5">
-                    {log}
+                    {renderLog(log)}
                   </div>
                 ))}
              </div>

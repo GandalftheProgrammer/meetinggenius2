@@ -98,15 +98,15 @@ const App: React.FC = () => {
         // Upload Notes if they exist
         if (data.summary) {
             const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Decisions\n${data.decisions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
-            await uploadToDrive(`${safeTitle}_notes.md`, notesContent);
-            addLog("Notes saved to Drive.");
+            const result = await uploadToDrive(`${safeTitle}_notes.md`, notesContent);
+            if (result.webViewLink) addLog(`Notes saved: ${result.webViewLink}`);
         }
 
         // Upload Transcript if it exists
         if (data.transcription) {
             const transcriptContent = `# Transcription: ${currentTitle}\n\n${data.transcription}`;
-            await uploadToDrive(`${safeTitle}_transcript.md`, transcriptContent);
-            addLog("Transcript saved to Drive.");
+            const result = await uploadToDrive(`${safeTitle}_transcript.md`, transcriptContent);
+            if (result.webViewLink) addLog(`Transcript saved: ${result.webViewLink}`);
         }
     } catch (err) {
         console.error("Drive upload error", err);
