@@ -37,8 +37,8 @@ export const handler = async (event: any) => {
 
       if (!initResponse.ok) {
          const errText = await initResponse.text();
-         console.error("Google Upload Init Failed", errText);
-         throw new Error("Failed to initialize upload with Google");
+         console.error("Google Upload Init Failed", initResponse.status, errText);
+         throw new Error(`Google Handshake Failed (${initResponse.status}): ${errText}`);
       }
 
       const uploadUrl = initResponse.headers.get('x-goog-upload-url');

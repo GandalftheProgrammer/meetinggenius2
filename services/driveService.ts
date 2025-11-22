@@ -14,8 +14,13 @@ export const initDrive = (callback: (token: string) => void) => {
     return;
   }
 
+  // Vite uses import.meta.env for environment variables
+  // Fix: Safely access env to prevent crashes if undefined in certain environments
+  const env = (import.meta as any).env;
+  const clientId = env?.VITE_GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID_HERE';
+
   tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: process.env.GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID_HERE', // In production, use env var
+    client_id: clientId, 
     scope: 'https://www.googleapis.com/auth/drive.file',
     callback: (tokenResponse: any) => {
       if (tokenResponse && tokenResponse.access_token) {
