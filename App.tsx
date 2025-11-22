@@ -5,7 +5,7 @@ import Recorder from './components/Recorder';
 import Results from './components/Results';
 import { AppState, MeetingData, ProcessingMode } from './types';
 import { processMeetingAudio } from './services/geminiService';
-import { initDrive, connectToDrive, uploadToDrive } from './services/driveService';
+import { initDrive, connectToDrive, uploadToDrive, disconnectDrive } from './services/driveService';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
@@ -52,6 +52,12 @@ const App: React.FC = () => {
           localStorage.setItem('drive_folder_name', folderName);
           connectToDrive();
       }
+  };
+
+  const handleDisconnectDrive = () => {
+    disconnectDrive();
+    setIsDriveConnected(false);
+    addLog("Google Drive disconnected");
   };
 
   // Whenever chunks update, rebuild the combined blob for preview
@@ -181,7 +187,11 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Header isDriveConnected={isDriveConnected} onConnectDrive={handleConnectDrive} />
+      <Header 
+        isDriveConnected={isDriveConnected} 
+        onConnectDrive={handleConnectDrive} 
+        onDisconnectDrive={handleDisconnectDrive}
+      />
 
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
         
@@ -201,7 +211,7 @@ const App: React.FC = () => {
               </div>
             )}
 
-            <div className="w-full max-w-md space-y-2">
+            <div className="w-full max-w-lg space-y-2">
               <label htmlFor="title" className="block text-sm font-medium text-slate-700 ml-1">
                 Meeting Title
               </label>

@@ -1,13 +1,14 @@
 
 import React from 'react';
-import { Sparkles, CheckCircle2, Bot } from 'lucide-react';
+import { Sparkles, CheckCircle2, Bot, XCircle } from 'lucide-react';
 
 interface HeaderProps {
   isDriveConnected: boolean;
   onConnectDrive: () => void;
+  onDisconnectDrive: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive }) => {
+const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive, onDisconnectDrive }) => {
   return (
     <header className="w-full py-6 px-4 md:px-8 bg-white border-b border-slate-200 sticky top-0 z-50">
       <div className="max-w-5xl mx-auto flex items-center justify-between">
@@ -22,25 +23,30 @@ const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive }) => 
         
         <div className="flex items-center gap-3">
             <button 
-                onClick={onConnectDrive}
-                disabled={isDriveConnected}
-                className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-bold border transition-all shadow-sm ${
+                onClick={isDriveConnected ? onDisconnectDrive : onConnectDrive}
+                className={`group flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border transition-all shadow-sm ${
                     isDriveConnected 
-                    ? 'bg-green-100 border-green-200 text-green-700 cursor-default' 
+                    ? 'bg-green-50 border-green-200 text-green-700 hover:bg-red-50 hover:border-red-200 hover:text-red-600 cursor-pointer' 
                     : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
                 }`}
-                title={isDriveConnected ? "Connected to Google Drive" : "Connect to Google Drive to save notes automatically"}
+                title={isDriveConnected ? "Click to Disconnect" : "Connect to Google Drive to save notes automatically"}
             >
                 {isDriveConnected ? (
-                    <CheckCircle2 className="w-5 h-5" />
+                    <>
+                        <CheckCircle2 className="w-4 h-4 group-hover:hidden" />
+                        <XCircle className="w-4 h-4 hidden group-hover:block" />
+                    </>
                 ) : (
                     <img 
                         src="https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg" 
                         alt="Google Drive" 
-                        className="w-5 h-5"
+                        className="w-4 h-4"
                     />
                 )}
-                <span className="hidden md:inline">{isDriveConnected ? 'Drive Connected' : 'Connect Drive'}</span>
+                <span className="hidden md:inline">
+                    {isDriveConnected ? <span className="group-hover:hidden">Drive Connected</span> : 'Connect Drive'}
+                    {isDriveConnected && <span className="hidden group-hover:inline">Disconnect</span>}
+                </span>
             </button>
 
             <div className="hidden md:flex items-center gap-1 text-sm font-medium text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200">
