@@ -33,8 +33,13 @@ export const handler = async (event: any) => {
           'X-Goog-Upload-Header-Content-Type': mimeType,
           'Content-Type': 'application/json'
         },
-        // FIX: Use 'displayName' (camelCase) instead of 'display_name'
-        body: JSON.stringify({ displayName: `Meeting_Audio_${Date.now()}` })
+        // FIX: The API requires the metadata to be wrapped in a 'file' object
+        // and uses snake_case ('display_name') for the JSON field.
+        body: JSON.stringify({ 
+            file: {
+                display_name: `Meeting_Audio_${Date.now()}` 
+            }
+        })
       });
 
       if (!initResponse.ok) {
