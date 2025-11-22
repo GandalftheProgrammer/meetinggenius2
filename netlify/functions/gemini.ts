@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 // The API Key is SECURELY loaded here on the server.
@@ -32,7 +33,8 @@ export const handler = async (event: any) => {
           'X-Goog-Upload-Header-Content-Type': mimeType,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ display_name: `Meeting_Audio_${Date.now()}` })
+        // FIX: Use 'displayName' (camelCase) instead of 'display_name'
+        body: JSON.stringify({ displayName: `Meeting_Audio_${Date.now()}` })
       });
 
       if (!initResponse.ok) {
