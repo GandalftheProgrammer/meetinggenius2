@@ -1,6 +1,5 @@
-import { GoogleUser } from '../types';
 
-const FOLDER_NAME = 'MeetingGenius';
+import { GoogleUser } from '../types';
 
 // This relies on the Google Identity Services script loaded in index.html
 declare const google: any;
@@ -8,6 +7,7 @@ declare const google: any;
 let tokenClient: any;
 let accessToken: string | null = null;
 
+// Initialize the Drive Client
 export const initDrive = (callback: (token: string) => void) => {
   if (typeof google === 'undefined') {
     console.error('Google Identity Services script not loaded');
@@ -15,7 +15,6 @@ export const initDrive = (callback: (token: string) => void) => {
   }
 
   // Vite uses import.meta.env for environment variables
-  // Fix: Safely access env to prevent crashes if undefined in certain environments
   const env = (import.meta as any).env;
   const clientId = env?.VITE_GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID_HERE';
 
@@ -50,8 +49,10 @@ export const connectToDrive = () => {
     console.error("Drive client not initialized");
     return;
   }
-  // Force prompt if token is missing or expired, otherwise skip prompt if possible
-  tokenClient.requestAccessToken({ prompt: '' });
+  // Force the user to select an account to avoid confusion about which Drive is connected
+  // 'consent' ensures the user approves permissions again (useful for testing)
+  // 'select_account' forces the account chooser
+  tokenClient.requestAccessToken({ prompt: 'consent select_account' });
 };
 
 export const disconnectDrive = () => {
@@ -63,10 +64,11 @@ export const disconnectDrive = () => {
   }
 };
 
-const getFolderId = async (): Promise<string | null> => {
+// Helper to get or create a folder ID based on name
+const getFolderId = async (folderName: string): Promise<string | null> => {
   if (!accessToken) return null;
 
-  const query = `mimeType='application/vnd.google-apps.folder' and name='${FOLDER_NAME}' and trashed=false`;
+  const query = `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}`;
 
   const response = await fetch(url, {
@@ -80,9 +82,9 @@ const getFolderId = async (): Promise<string | null> => {
   return null;
 };
 
-const createFolder = async (): Promise<string> => {
+const createFolder = async (folderName: string): Promise<string> => {
   const metadata = {
-    name: FOLDER_NAME,
+    name: folderName,
     mimeType: 'application/vnd.google-apps.folder',
   };
 
@@ -98,13 +100,17 @@ const createFolder = async (): Promise<string> => {
   return data.id;
 };
 
-export const uploadToDrive = async (filename: string, content: string): Promise<string> => {
+// Upload function that retrieves the preferred folder name from storage if not passed
+export const uploadToDrive = async (filename: string, content: string): Promise<{id: string, webViewLink?: string}> => {
   if (!accessToken) throw new Error("Not authenticated");
 
+  // Retrieve folder preference, default to 'MeetingGenius'
+  const folderName = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
+
   // 1. Find or Create Folder
-  let folderId = await getFolderId();
+  let folderId = await getFolderId(folderName);
   if (!folderId) {
-    folderId = await createFolder();
+    folderId = await createFolder(folderName);
   }
 
   // 2. Upload File
@@ -120,7 +126,8 @@ export const uploadToDrive = async (filename: string, content: string): Promise<
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', fileContent);
 
-  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+  // Request 'webViewLink' field to allow opening the file later
+  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
@@ -128,5 +135,5 @@ export const uploadToDrive = async (filename: string, content: string): Promise<
 
   if (!response.ok) throw new Error("Upload failed");
   const data = await response.json();
-  return data.id;
+  return { id: data.id, webViewLink: data.webViewLink };
 };

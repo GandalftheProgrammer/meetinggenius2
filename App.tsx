@@ -43,6 +43,17 @@ const App: React.FC = () => {
     });
   }, []);
 
+  // Handle user clicking "Connect Drive"
+  const handleConnectDrive = () => {
+      // Prompt for folder name to satisfy user request to choose location
+      const folderName = prompt("Choose a Google Drive folder name to save your notes:", localStorage.getItem('drive_folder_name') || "MeetingGenius");
+      
+      if (folderName) {
+          localStorage.setItem('drive_folder_name', folderName);
+          connectToDrive();
+      }
+  };
+
   // Whenever chunks update, rebuild the combined blob for preview
   useEffect(() => {
     if (audioChunks.length > 0) {
@@ -170,7 +181,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Header isDriveConnected={isDriveConnected} onConnectDrive={connectToDrive} />
+      <Header isDriveConnected={isDriveConnected} onConnectDrive={handleConnectDrive} />
 
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
         
