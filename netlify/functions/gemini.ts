@@ -18,12 +18,9 @@ export const handler = async (event: any) => {
     const { action } = payload;
 
     // --- ACTION 1: AUTHORIZE UPLOAD (Handshake) ---
-    // This gets a Signed Upload URL from Google so the frontend can upload directly.
     if (action === 'authorize_upload') {
       const { mimeType, fileSize } = payload;
       
-      // We have to make a raw REST call to get the Upload URL because the Node SDK 
-      // abstracts this step and tries to upload the file itself (which we can't do here due to size).
       const initResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
         method: 'POST',
         headers: {
@@ -33,8 +30,6 @@ export const handler = async (event: any) => {
           'X-Goog-Upload-Header-Content-Type': mimeType,
           'Content-Type': 'application/json'
         },
-        // FIX: The API requires the metadata to be wrapped in a 'file' object
-        // and uses snake_case ('display_name') for the JSON field.
         body: JSON.stringify({ 
             file: {
                 display_name: `Meeting_Audio_${Date.now()}` 
@@ -57,12 +52,51 @@ export const handler = async (event: any) => {
       };
     }
 
-    // --- ACTION 2: GENERATE CONTENT ---
-    // The frontend tells us the file is already uploaded at `fileUri`.
+    // --- ACTION 2: UPLOAD CHUNK (Proxy) ---
+    // Receives Base64 data from Frontend, converts to Buffer, forwards to Google
+    if (action === 'upload_chunk') {
+      const { uploadUrl, chunkData, offset, totalSize, isLastChunk } = payload;
+      
+      // Convert Base64 back to Binary Buffer
+      const buffer = Buffer.from(chunkData, 'base64');
+      const chunkLength = buffer.length;
+      
+      const command = isLastChunk ? 'upload, finalize' : 'upload';
+      
+      // PUT to Google using the Signed URL
+      const putResponse = await fetch(uploadUrl, {
+        method: 'POST', // Google Resumable supports POST if offset headers are provided
+        headers: {
+          'Content-Length': chunkLength.toString(),
+          'X-Goog-Upload-Offset': offset,
+          'X-Goog-Upload-Command': command,
+        },
+        body: buffer
+      });
+
+      if (!putResponse.ok) {
+         const errText = await putResponse.text();
+         throw new Error(`Google Chunk Upload Failed: ${errText}`);
+      }
+
+      // If finalized, Google returns the File Object JSON
+      let body = {};
+      if (isLastChunk) {
+        body = await putResponse.json();
+      }
+
+      return {
+        statusCode: 200,
+        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json' }
+      };
+    }
+
+    // --- ACTION 3: GENERATE CONTENT ---
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
-      // 1. Construct Prompts (Same logic as before)
+      // 1. Construct Prompts
       let systemInstruction = `
         You are an expert professional meeting secretary. 
         Listen to the attached audio recording of a meeting.

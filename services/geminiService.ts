@@ -1,8 +1,5 @@
-import { MeetingData, ProcessingMode } from '../types';
 
-// NOTE: In this SaaS architecture, the Client NO LONGER needs the GoogleGenAI SDK directly
-// because all "thinking" happens on the backend.
-// We only keep the Types/Interfaces here if needed, or just plain fetch calls.
+import { MeetingData, ProcessingMode } from '../types';
 
 export const processMeetingAudio = async (
   audioBlob: Blob, 
@@ -10,77 +7,85 @@ export const processMeetingAudio = async (
   mode: ProcessingMode = 'ALL'
 ): Promise<MeetingData> => {
   try {
-    console.log(`Starting SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`Starting SaaS Flow (Chunked Proxy). Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
 
-    // --- STEP 1: HANDSHAKE (Authorize Upload) ---
-    // Ask our backend for a secure Google Upload URL. 
-    // We don't send the file yet, just the metadata.
-    console.log("Step 1: Requesting Upload URL from backend...");
+    // 1. Handshake: Get authorized Upload URL from Backend
+    console.log("Step 1: Requesting Upload URL...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'authorize_upload',
-        mimeType: mimeType,
-        fileSize: audioBlob.size.toString()
+      body: JSON.stringify({ 
+          action: 'authorize_upload', 
+          mimeType, 
+          fileSize: audioBlob.size.toString() 
       })
     });
 
     if (!authResponse.ok) {
-      const err = await authResponse.text();
-      throw new Error(`Backend Handshake Failed: ${err}`);
+        const err = await authResponse.text();
+        throw new Error(`Handshake Failed: ${err}`);
     }
-
     const { uploadUrl } = await authResponse.json();
-    console.log("Step 1 Complete. Received secure upload URL.");
 
-    // --- STEP 2: DIRECT UPLOAD (Browser -> Google) ---
-    // Upload the raw binary directly to Google's servers using the URL we just got.
-    // This bypasses Netlify's 6MB limit.
-    console.log("Step 2: Uploading raw data to Google...");
+    // 2. Chunk Loop: Send data to Backend -> Backend sends to Google
+    const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks (Safe for Netlify's 6MB limit)
+    let offset = 0;
+    let fileUri: string | null = null;
     
-    const uploadResponse = await fetch(uploadUrl, {
-      method: 'POST', // Google Resumable protocol uses POST/PUT with specific headers
-      headers: {
-        'Content-Length': audioBlob.size.toString(),
-        'X-Goog-Upload-Offset': '0',
-        'X-Goog-Upload-Command': 'upload, finalize',
-      },
-      body: audioBlob
-    });
+    console.log("Step 2: Starting Chunked Proxy Upload...");
+    
+    while (offset < audioBlob.size) {
+        const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
+        const chunkBase64 = await blobToBase64(chunkBlob);
+        const isLast = offset + chunkBlob.size >= audioBlob.size;
+        
+        // console.log(`Uploading chunk: ${offset} - ${offset + chunkBlob.size}`);
 
-    if (!uploadResponse.ok) {
-      throw new Error(`Direct Upload Failed: ${uploadResponse.statusText}`);
+        const chunkResp = await fetch('/.netlify/functions/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'upload_chunk',
+                uploadUrl,
+                chunkData: chunkBase64,
+                offset: offset.toString(),
+                totalSize: audioBlob.size.toString(),
+                isLastChunk: isLast
+            })
+        });
+        
+        if (!chunkResp.ok) {
+             const err = await chunkResp.text();
+             throw new Error(`Chunk Upload Failed: ${err}`);
+        }
+        
+        if (isLast) {
+            const result = await chunkResp.json();
+            // Google returns the file metadata in the final response
+            if (result.file && result.file.uri) {
+                fileUri = result.file.uri;
+            } else {
+                throw new Error("Upload finalized but no File URI returned from Google.");
+            }
+        }
+        offset += CHUNK_SIZE;
     }
 
-    const uploadResult = await uploadResponse.json();
-    const fileUri = uploadResult.file.uri;
+    if (!fileUri) throw new Error("File URI missing after upload.");
     console.log(`Step 2 Complete. File URI: ${fileUri}`);
 
-    // --- STEP 3: GENERATE (Trigger AI) ---
-    // Now tell the backend: "The file is ready at this URI, please process it."
-    console.log("Step 3: Requesting generation from backend...");
-    
-    const generateResponse = await fetch('/.netlify/functions/gemini', {
+    // 3. Generate: Ask Backend to process the file
+    console.log("Step 3: generating...");
+    const genResponse = await fetch('/.netlify/functions/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'generate',
-            fileUri: fileUri,
-            mimeType: uploadResult.file.mimeType,
-            mode: mode
-        })
+        body: JSON.stringify({ action: 'generate', fileUri, mimeType, mode })
     });
     
-    if (!generateResponse.ok) {
-       const err = await generateResponse.text();
-       throw new Error(`Generation Failed: ${err}`);
-    }
-
-    const result = await generateResponse.json();
-    console.log("Step 3 Complete. Data received.");
+    if (!genResponse.ok) throw new Error(await genResponse.text());
+    const genResult = await genResponse.json();
     
-    return parseResponse(result.text, mode);
+    return parseResponse(genResult.text, mode);
 
   } catch (error) {
     console.error("Error in SaaS flow:", error);
@@ -88,10 +93,24 @@ export const processMeetingAudio = async (
   }
 };
 
-// Helper to normalize partial data
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = reader.result as string;
+      // Remove "data:audio/webm;base64," prefix
+      const base64 = res.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     try {
-        const rawData = JSON.parse(jsonText);
+        const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const rawData = JSON.parse(cleanText);
         return {
             transcription: rawData.transcription || "",
             summary: rawData.summary || "",
