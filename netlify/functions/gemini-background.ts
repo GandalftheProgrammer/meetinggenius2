@@ -1,4 +1,3 @@
-
 import { Type } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 
@@ -9,7 +8,7 @@ import { getStore } from "@netlify/blobs";
 const waitForFileActive = async (fileUri: string, apiKey: string) => {
     console.log(`[Background] Checking state for ${fileUri}...`);
     let attempts = 0;
-    const maxAttempts = 60; // 5 minutes max (60 * 5s)
+    const maxAttempts = 180; // Increased to 15 minutes max (180 * 5s)
 
     while (attempts < maxAttempts) {
         try {
@@ -19,7 +18,7 @@ const waitForFileActive = async (fileUri: string, apiKey: string) => {
             const data = await response.json();
             
             if (data.state === "ACTIVE") {
-                console.log(`[Background] File ${fileUri} is ACTIVE.`);
+                console.log(`[Background] File ${fileUri} is ACTIVE (Attempt ${attempts}).`);
                 return;
             }
             
@@ -37,7 +36,7 @@ const waitForFileActive = async (fileUri: string, apiKey: string) => {
             attempts++;
         }
     }
-    throw new Error("Timeout waiting for file to become ACTIVE.");
+    throw new Error(`Timeout waiting for file to become ACTIVE. Attempts: ${attempts}`);
 };
 
 export default async (req: Request) => {

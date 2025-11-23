@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
@@ -347,7 +346,8 @@ const Recorder: React.FC<RecorderProps> = ({
             <div>
                 <input 
                     type="file" 
-                    accept="audio/*" 
+                    // Support wider range of audio formats explicitly for mobile
+                    accept="audio/*,.mp3,.wav,.m4a,.mp4,.aac,.webm,.ogg,.flac"
                     ref={fileInputRef} 
                     onChange={handleFileSelect} 
                     className="hidden" 

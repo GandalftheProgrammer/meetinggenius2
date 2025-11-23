@@ -1,9 +1,8 @@
-
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
 export const processMeetingAudio = async (
   audioBlob: Blob, 
-  mimeType: string, 
+  defaultMimeType: string, 
   mode: ProcessingMode = 'ALL',
   model: GeminiModel,
   onLog?: (msg: string) => void
@@ -14,7 +13,10 @@ export const processMeetingAudio = async (
   };
 
   try {
-    log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    // Determine MIME type strictly from file extension if available (fixes slow Google indexing)
+    const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
+    
+    log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
     // 1. Handshake
     log("Step 1: Requesting Upload URL...");
@@ -146,6 +148,25 @@ export const processMeetingAudio = async (
     throw error;
   }
 };
+
+function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
+    // If it's a File object, we can look at the extension
+    if ('name' in blob) {
+        const name = (blob as File).name.toLowerCase();
+        if (name.endsWith('.mp3')) return 'audio/mp3';
+        if (name.endsWith('.wav')) return 'audio/wav';
+        if (name.endsWith('.m4a') || name.endsWith('.mp4')) return 'audio/mp4';
+        if (name.endsWith('.aac')) return 'audio/aac';
+        if (name.endsWith('.ogg')) return 'audio/ogg';
+        if (name.endsWith('.flac')) return 'audio/flac';
+        if (name.endsWith('.webm')) return 'audio/webm';
+    }
+    // Fallback to blob type if valid, otherwise default
+    if (blob.type && blob.type !== 'application/octet-stream') {
+        return blob.type;
+    }
+    return defaultType;
+}
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
