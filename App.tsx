@@ -114,13 +114,14 @@ const App: React.FC = () => {
 
   // Manual Save Trigger (Passed to Results component)
   const handleManualAudioSave = async () => {
-      if (!combinedBlob || !isDriveConnected) {
-          if (!isDriveConnected) {
-              // Try to connect if user clicks save but isn't connected
-              handleConnectDrive();
-              return; // User has to click again after connection
-          }
+      if (!combinedBlob) {
           return;
+      }
+      if (!isDriveConnected) {
+          // Try to connect if user clicks save but isn't connected
+          handleConnectDrive();
+          // We can't immediately save because auth is async popup, user has to click again
+          return; 
       }
       let currentTitle = title.trim() || `Meeting ${new Date().toLocaleDateString()}`;
       await saveAudioBackup(combinedBlob, currentTitle);
@@ -268,6 +269,7 @@ const App: React.FC = () => {
               onProcessAudio={handleProcessAudio}
               onDiscard={handleDiscard}
               onRecordingChange={handleRecordingChange}
+              onSaveAudio={isDriveConnected ? handleManualAudioSave : undefined}
               audioUrl={audioUrl}
               debugLogs={debugLogs}
             />

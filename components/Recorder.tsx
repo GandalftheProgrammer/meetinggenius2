@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, Loader2, MonitorPlay, AlertCircle, FileText, ListChecks, Trash2, Circle } from 'lucide-react';
+import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
 
@@ -10,6 +10,7 @@ interface RecorderProps {
   onProcessAudio: (mode: ProcessingMode) => void;
   onDiscard: () => void;
   onRecordingChange: (isRecording: boolean) => void;
+  onSaveAudio?: () => Promise<void>;
   audioUrl: string | null;
   debugLogs: string[];
 }
@@ -22,6 +23,7 @@ const Recorder: React.FC<RecorderProps> = ({
   onProcessAudio, 
   onDiscard,
   onRecordingChange,
+  onSaveAudio,
   audioUrl, 
   debugLogs 
 }) => {
@@ -30,10 +32,13 @@ const Recorder: React.FC<RecorderProps> = ({
   const [audioSource, setAudioSource] = useState<AudioSource>('microphone');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     // @ts-ignore 
@@ -42,10 +47,21 @@ const Recorder: React.FC<RecorderProps> = ({
     }
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      cleanupResources();
     };
   }, []);
+
+  const cleanupResources = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    
+    if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+    }
+    
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close();
+    }
+  };
 
   const getSupportedMimeType = () => {
     const types = [
@@ -66,12 +82,14 @@ const Recorder: React.FC<RecorderProps> = ({
 
   const startRecording = async () => {
     try {
-      let mediaStream: MediaStream;
+      let finalStream: MediaStream;
 
       if (audioSource === 'system') {
+        // --- MIXING LOGIC: SYSTEM + MIC ---
         try {
+          // 1. Get System Audio
           const displayStream = await navigator.mediaDevices.getDisplayMedia({ 
-            video: true, 
+            video: true, // Required to get audio in many browsers
             audio: {
               echoCancellation: false,
               noiseSuppression: false,
@@ -79,40 +97,67 @@ const Recorder: React.FC<RecorderProps> = ({
             } 
           });
 
-          const audioTracks = displayStream.getAudioTracks();
-          if (audioTracks.length === 0) {
-            alert("No audio shared! Please ensure you check the 'Share tab audio' box in the browser popup.");
+          // Check if user shared audio
+          const sysAudioTracks = displayStream.getAudioTracks();
+          if (sysAudioTracks.length === 0) {
+            alert("No audio shared! Please ensure you check the 'Share tab audio' box.");
             displayStream.getTracks().forEach(t => t.stop());
             return;
           }
 
-          mediaStream = new MediaStream([audioTracks[0]]);
-          audioTracks[0].onended = () => stopRecording();
-          streamRef.current = displayStream;
+          // 2. Get Microphone Audio
+          const micStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+               echoCancellation: true, // Good for mixing to prevent echo
+               noiseSuppression: true
+            }
+          });
+
+          // 3. Mix them using Web Audio API
+          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          audioContextRef.current = audioCtx;
+
+          const sysSource = audioCtx.createMediaStreamSource(displayStream);
+          const micSource = audioCtx.createMediaStreamSource(micStream);
+          const dest = audioCtx.createMediaStreamDestination();
+
+          sysSource.connect(dest);
+          micSource.connect(dest);
+
+          // Use the mixed stream
+          finalStream = dest.stream;
+          
+          // IMPORTANT: Stop everything when screen share stops
+          sysAudioTracks[0].onended = () => stopRecording();
+
+          // Store reference for cleanup (we store the displayStream so we can stop the video track later)
+          streamRef.current = displayStream; 
+
         } catch (err) {
-          console.error("Error getting display media:", err);
+          console.error("Error setting up mixed audio:", err);
           return; 
         }
       } else {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ 
+        // --- STANDARD MIC ONLY ---
+        finalStream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
           } 
         });
-        streamRef.current = mediaStream;
+        streamRef.current = finalStream;
       }
       
-      setStream(mediaStream);
+      setStream(finalStream);
       const mimeType = getSupportedMimeType();
       
       const options: MediaRecorderOptions = {
         mimeType,
-        audioBitsPerSecond: 32000 
+        audioBitsPerSecond: 64000 // Higher quality for mixed audio
       };
       
-      const mediaRecorder = new MediaRecorder(mediaStream, options);
+      const mediaRecorder = new MediaRecorder(finalStream, options);
       mediaRecorderRef.current = mediaRecorder;
 
       mediaRecorder.ondataavailable = (e) => {
@@ -140,23 +185,30 @@ const Recorder: React.FC<RecorderProps> = ({
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
+      cleanupResources();
+      
       setStream(null);
       streamRef.current = null;
       setIsRecording(false);
       onRecordingChange(false);
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
     }
   }, [recordingTime, onRecordingChange]);
 
   const toggleRecording = () => {
     if (isRecording) stopRecording();
     else startRecording();
+  };
+
+  const handleManualSave = async () => {
+      if (!onSaveAudio) return;
+      setIsSaving(true);
+      try {
+          await onSaveAudio();
+          setIsSaved(true);
+          setTimeout(() => setIsSaved(false), 3000);
+      } finally {
+          setIsSaving(false);
+      }
   };
 
   const formatTime = (seconds: number) => {
@@ -217,7 +269,7 @@ const Recorder: React.FC<RecorderProps> = ({
   return (
     <div className="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-slate-100 p-6 md:p-8 flex flex-col items-center transition-all duration-300 hover:shadow-2xl">
       
-      {/* Source Selection - Now visually disabled instead of removed when recording */}
+      {/* Source Selection */}
       {!isMobile && (
         <div className={`w-full mb-6 transition-opacity duration-300 ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
           <div className="flex bg-slate-100 p-1 rounded-lg w-full">
@@ -239,7 +291,7 @@ const Recorder: React.FC<RecorderProps> = ({
               }`}
             >
               <MonitorPlay className="w-4 h-4" />
-              System / Tab
+              System + Mic
             </button>
           </div>
           
@@ -247,7 +299,7 @@ const Recorder: React.FC<RecorderProps> = ({
              {audioSource === 'microphone' ? (
                <p className="text-xs text-slate-400">In-person meetings or Desktop Apps (Zoom/Teams) via speakers.</p>
              ) : (
-               <p className="text-xs text-slate-400">Browser tabs (Meet, YouTube) via direct audio capture.</p>
+               <p className="text-xs text-slate-400">Records Browser Tab/Window audio AND your microphone simultaneously.</p>
              )}
           </div>
         </div>
@@ -303,8 +355,9 @@ const Recorder: React.FC<RecorderProps> = ({
               <audio controls src={audioUrl} className="w-full h-8" />
             </div>
           )}
-
-          <div className="grid grid-cols-2 gap-3 w-full mb-4">
+          
+          {/* Action Buttons */}
+          <div className="grid grid-cols-2 gap-3 w-full mb-3">
             <button
               onClick={() => onProcessAudio('NOTES_ONLY')}
               className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700"
@@ -321,6 +374,22 @@ const Recorder: React.FC<RecorderProps> = ({
               <span className="font-semibold text-sm">Transcript</span>
             </button>
           </div>
+
+          {/* New Audio Save Button */}
+          {onSaveAudio && (
+              <button
+                onClick={handleManualSave}
+                disabled={isSaving || isSaved}
+                className={`w-full mb-3 py-2 px-4 rounded-lg text-sm font-medium transition-all shadow-sm flex items-center justify-center gap-2 ${
+                    isSaved 
+                    ? 'bg-green-50 border-green-200 text-green-700 border' 
+                    : 'bg-white border-slate-200 text-slate-700 border hover:bg-slate-50'
+                }`}
+              >
+                 {isSaving ? <Loader2 className="w-4 h-4 animate-spin"/> : isSaved ? <CheckCircle className="w-4 h-4"/> : <FileAudio className="w-4 h-4"/>}
+                 {isSaved ? "Saved to Drive!" : "Save Audio to Drive"}
+              </button>
+          )}
 
           <button
             onClick={onDiscard}
