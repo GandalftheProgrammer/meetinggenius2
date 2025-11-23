@@ -140,7 +140,8 @@ const App: React.FC = () => {
       addLog(`Processing Mode: ${mode}`);
       const mimeType = combinedBlob.type || 'audio/webm';
         
-      const newData = await processMeetingAudio(combinedBlob, mimeType, mode);
+      // CRITICAL FIX: Passing addLog as the 4th argument
+      const newData = await processMeetingAudio(combinedBlob, mimeType, mode, addLog);
       addLog("Success! Response received.");
 
       let updatedData: MeetingData;

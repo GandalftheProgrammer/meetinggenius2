@@ -1,3 +1,4 @@
+
 import { MeetingData, ProcessingMode } from '../types';
 
 export const processMeetingAudio = async (
@@ -104,7 +105,7 @@ export const processMeetingAudio = async (
     let rawAccumulatedText = '';
     let chunkCount = 0;
     
-    log("Step 4: Reading Stream...");
+    log("Step 4: Reading Stream initialized. Waiting for data...");
 
     while (true) {
         const { done, value } = await reader.read();
@@ -115,7 +116,7 @@ export const processMeetingAudio = async (
         rawAccumulatedText += chunk;
         
         // Log every few chunks to show progress without spamming
-        if (chunkCount % 5 === 0) {
+        if (chunkCount % 5 === 0 || chunkCount === 1) {
             log(`Received chunk #${chunkCount} (Total bytes: ${rawAccumulatedText.length})`);
         }
     }
