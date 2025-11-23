@@ -1,9 +1,11 @@
-import { MeetingData, ProcessingMode } from '../types';
+
+import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
 export const processMeetingAudio = async (
   audioBlob: Blob, 
   mimeType: string, 
   mode: ProcessingMode = 'ALL',
+  model: GeminiModel,
   onLog?: (msg: string) => void
 ): Promise<MeetingData> => {
   const log = (msg: string) => {
@@ -80,7 +82,7 @@ export const processMeetingAudio = async (
     log(`File upload finalized. URI: ${fileUri}`);
 
     // 3. Start Background Job
-    log("Step 3: [NEW] Queuing Background Job...");
+    log(`Step 3: [NEW] Queuing Background Job with model: ${model}...`);
     
     // Generate a unique ID for this job
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -89,7 +91,7 @@ export const processMeetingAudio = async (
     const startResp = await fetch('/.netlify/functions/gemini-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileUri, mimeType, mode, jobId })
+        body: JSON.stringify({ fileUri, mimeType, mode, jobId, model })
     });
 
     // Netlify Background functions typically return 202 Accepted immediately

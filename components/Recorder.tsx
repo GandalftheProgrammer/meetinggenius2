@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle } from 'lucide-react';
+import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
 
@@ -11,6 +11,7 @@ interface RecorderProps {
   onDiscard: () => void;
   onRecordingChange: (isRecording: boolean) => void;
   onSaveAudio?: () => Promise<void>;
+  onFileUpload: (file: File) => void;
   audioUrl: string | null;
   debugLogs: string[];
 }
@@ -24,6 +25,7 @@ const Recorder: React.FC<RecorderProps> = ({
   onDiscard,
   onRecordingChange,
   onSaveAudio,
+  onFileUpload,
   audioUrl, 
   debugLogs 
 }) => {
@@ -39,6 +41,7 @@ const Recorder: React.FC<RecorderProps> = ({
   const timerRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // @ts-ignore 
@@ -85,11 +88,9 @@ const Recorder: React.FC<RecorderProps> = ({
       let finalStream: MediaStream;
 
       if (audioSource === 'system') {
-        // --- MIXING LOGIC: SYSTEM + MIC ---
         try {
-          // 1. Get System Audio
           const displayStream = await navigator.mediaDevices.getDisplayMedia({ 
-            video: true, // Required to get audio in many browsers
+            video: true,
             audio: {
               echoCancellation: false,
               noiseSuppression: false,
@@ -97,7 +98,6 @@ const Recorder: React.FC<RecorderProps> = ({
             } 
           });
 
-          // Check if user shared audio
           const sysAudioTracks = displayStream.getAudioTracks();
           if (sysAudioTracks.length === 0) {
             alert("No audio shared! Please ensure you check the 'Share tab audio' box.");
@@ -105,15 +105,13 @@ const Recorder: React.FC<RecorderProps> = ({
             return;
           }
 
-          // 2. Get Microphone Audio
           const micStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
-               echoCancellation: true, // Good for mixing to prevent echo
+               echoCancellation: true,
                noiseSuppression: true
             }
           });
 
-          // 3. Mix them using Web Audio API
           const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
           audioContextRef.current = audioCtx;
 
@@ -124,13 +122,8 @@ const Recorder: React.FC<RecorderProps> = ({
           sysSource.connect(dest);
           micSource.connect(dest);
 
-          // Use the mixed stream
           finalStream = dest.stream;
-          
-          // IMPORTANT: Stop everything when screen share stops
           sysAudioTracks[0].onended = () => stopRecording();
-
-          // Store reference for cleanup (we store the displayStream so we can stop the video track later)
           streamRef.current = displayStream; 
 
         } catch (err) {
@@ -138,7 +131,6 @@ const Recorder: React.FC<RecorderProps> = ({
           return; 
         }
       } else {
-        // --- STANDARD MIC ONLY ---
         finalStream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
             echoCancellation: false,
@@ -154,7 +146,7 @@ const Recorder: React.FC<RecorderProps> = ({
       
       const options: MediaRecorderOptions = {
         mimeType,
-        audioBitsPerSecond: 64000 // Higher quality for mixed audio
+        audioBitsPerSecond: 64000
       };
       
       const mediaRecorder = new MediaRecorder(finalStream, options);
@@ -211,6 +203,12 @@ const Recorder: React.FC<RecorderProps> = ({
       }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+        onFileUpload(e.target.files[0]);
+    }
+  };
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -220,7 +218,6 @@ const Recorder: React.FC<RecorderProps> = ({
   const isProcessing = appState === AppState.PROCESSING;
   const hasRecordedData = audioUrl !== null;
 
-  // Helper to render logs with links
   const renderLog = (log: string) => {
     if (log.includes('http')) {
       const parts = log.split(/(https?:\/\/[^\s]+)/g);
@@ -249,8 +246,8 @@ const Recorder: React.FC<RecorderProps> = ({
               <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
             </div>
             <div className="text-center">
-              <p className="text-slate-800 font-semibold text-lg">Processing with Gemini 3</p>
-              <p className="text-slate-500 text-sm">Uploading & Analyzing audio...</p>
+              <p className="text-slate-800 font-semibold text-lg">Processing Audio</p>
+              <p className="text-slate-500 text-sm">Uploading & Analyzing...</p>
             </div>
          </div>
          {debugLogs.length > 0 && (
@@ -324,26 +321,49 @@ const Recorder: React.FC<RecorderProps> = ({
         {formatTime(recordingTime)}
       </div>
 
-      <div className="flex flex-col items-center justify-center w-full mb-6">
-        <button
-          onClick={toggleRecording}
-          className={`group relative flex items-center justify-center w-20 h-20 rounded-full shadow-md transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-offset-2 ${
-            isRecording 
-              ? 'bg-slate-900 hover:bg-slate-800 focus:ring-slate-200' 
-              : 'bg-red-500 hover:bg-red-600 focus:ring-red-200'
-          }`}
-        >
-          {isRecording ? (
-            <Square className="w-8 h-8 text-white fill-current" />
-          ) : (
-            audioSource === 'system' ? 
-              <MonitorPlay className="w-8 h-8 text-white" /> : 
-              <Circle className="w-8 h-8 text-white fill-current" />
-          )}
-        </button>
+      <div className="flex flex-col items-center justify-center w-full mb-6 gap-4">
+        {/* Record Button */}
+        <div className="relative">
+             <button
+              onClick={toggleRecording}
+              className={`group relative flex items-center justify-center w-20 h-20 rounded-full shadow-md transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-offset-2 ${
+                isRecording 
+                  ? 'bg-slate-900 hover:bg-slate-800 focus:ring-slate-200' 
+                  : 'bg-red-500 hover:bg-red-600 focus:ring-red-200'
+              }`}
+            >
+              {isRecording ? (
+                <Square className="w-8 h-8 text-white fill-current" />
+              ) : (
+                audioSource === 'system' ? 
+                  <MonitorPlay className="w-8 h-8 text-white" /> : 
+                  <Circle className="w-8 h-8 text-white fill-current" />
+              )}
+            </button>
+        </div>
         
-        <p className="mt-4 text-slate-400 text-sm font-medium">
-          {isRecording ? "Recording..." : hasRecordedData ? "Paused" : "Press to start"}
+        {/* Upload Button */}
+        {!isRecording && !hasRecordedData && (
+            <div>
+                <input 
+                    type="file" 
+                    accept="audio/*" 
+                    ref={fileInputRef} 
+                    onChange={handleFileSelect} 
+                    className="hidden" 
+                />
+                <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2 text-slate-500 hover:text-blue-600 text-sm font-medium transition-colors px-4 py-2 rounded-full hover:bg-blue-50"
+                >
+                    <Upload className="w-4 h-4" />
+                    Upload Audio File
+                </button>
+            </div>
+        )}
+
+        <p className="mt-2 text-slate-400 text-sm font-medium">
+          {isRecording ? "Recording..." : hasRecordedData ? "Paused" : "Press to start or Upload"}
         </p>
       </div>
 

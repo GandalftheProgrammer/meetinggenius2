@@ -1,4 +1,5 @@
 import { getStore } from "@netlify/blobs";
+import { Buffer } from "buffer";
 
 // This function handles Synchronous tasks:
 // 1. Upload Handshake (Fast)

@@ -1,14 +1,23 @@
 
 import React from 'react';
-import { Sparkles, CheckCircle2, Bot, XCircle } from 'lucide-react';
+import { CheckCircle2, Bot, XCircle, ChevronDown } from 'lucide-react';
+import { GeminiModel } from '../types';
 
 interface HeaderProps {
   isDriveConnected: boolean;
   onConnectDrive: () => void;
   onDisconnectDrive: () => void;
+  selectedModel: GeminiModel;
+  onModelChange: (model: GeminiModel) => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive, onDisconnectDrive }) => {
+const Header: React.FC<HeaderProps> = ({ 
+  isDriveConnected, 
+  onConnectDrive, 
+  onDisconnectDrive,
+  selectedModel,
+  onModelChange
+}) => {
   return (
     <header className="w-full py-6 px-4 md:px-8 bg-white border-b border-slate-200 sticky top-0 z-50">
       <div className="max-w-5xl mx-auto flex items-center justify-between">
@@ -22,6 +31,25 @@ const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive, onDis
         </div>
         
         <div className="flex items-center gap-3">
+            <div className="hidden md:flex relative group">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200 hover:border-slate-300 transition-colors">
+                    <span>Model:</span>
+                    <select 
+                        value={selectedModel}
+                        onChange={(e) => onModelChange(e.target.value as GeminiModel)}
+                        className="bg-transparent outline-none text-slate-800 font-semibold cursor-pointer appearance-none pr-4"
+                        style={{ backgroundImage: 'none' }}
+                    >
+                        <option value="gemini-3-pro-preview">Gemini 3 Pro (Preview)</option>
+                        <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                        <option value="gemini-2.0-flash-lite-preview-02-05">Gemini 2.0 Flash Lite</option>
+                        <option value="gemini-1.5-pro">Gemini 1.5 Pro (Stable)</option>
+                        <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
+                    </select>
+                    <ChevronDown className="w-3 h-3 absolute right-3 pointer-events-none text-slate-400" />
+                </div>
+            </div>
+
             <button 
                 onClick={isDriveConnected ? onDisconnectDrive : onConnectDrive}
                 className={`group flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border transition-all shadow-sm ${
@@ -48,11 +76,6 @@ const Header: React.FC<HeaderProps> = ({ isDriveConnected, onConnectDrive, onDis
                     {isDriveConnected && <span className="hidden group-hover:inline">Disconnect</span>}
                 </span>
             </button>
-
-            <div className="hidden md:flex items-center gap-1 text-sm font-medium text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200">
-                <Sparkles className="w-4 h-4 text-purple-500" />
-                <span>Gemini 3</span>
-            </div>
         </div>
       </div>
     </header>

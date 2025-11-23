@@ -1,3 +1,4 @@
+
 import { Type } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 
@@ -19,7 +20,7 @@ export default async (req: Request) => {
 
   try {
     const payload = await req.json();
-    const { fileUri, mimeType, mode } = payload;
+    const { fileUri, mimeType, mode, model } = payload;
     jobId = payload.jobId;
 
     if (!jobId || !fileUri) {
@@ -27,16 +28,16 @@ export default async (req: Request) => {
         return;
     }
 
-    console.log(`[Background] Starting job ${jobId} for file ${fileUri}`);
+    // Use selected model or fallback to 3-pro-preview
+    const MODEL_NAME = model || "gemini-3-pro-preview";
+
+    console.log(`[Background] Starting job ${jobId} for file ${fileUri} using model ${MODEL_NAME}`);
 
     // Initialize Store
     const store = getStore({ name: "meeting-results", consistency: "strong" });
 
     // Mark as started
     await store.setJSON(jobId, { status: 'PROCESSING' });
-
-    // Using the specific model requested by user
-    const MODEL_NAME = "gemini-3-pro-preview"; 
 
     // --- CONSTRUCT PROMPT ---
       let systemInstruction = `

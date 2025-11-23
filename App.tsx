@@ -3,13 +3,14 @@ import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Recorder from './components/Recorder';
 import Results from './components/Results';
-import { AppState, MeetingData, ProcessingMode } from './types';
+import { AppState, MeetingData, ProcessingMode, GeminiModel } from './types';
 import { processMeetingAudio } from './services/geminiService';
 import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disconnectDrive } from './services/driveService';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-3-pro-preview');
   
   // Data State
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
@@ -77,8 +78,8 @@ const App: React.FC = () => {
       setAudioUrl(url);
       
       return () => URL.revokeObjectURL(url);
-    } else {
-      setCombinedBlob(null);
+    } else if (!combinedBlob) {
+      // Only reset if combinedBlob is null (allows file upload to persist)
       setAudioUrl(null);
     }
   }, [audioChunks]);
@@ -88,9 +89,34 @@ const App: React.FC = () => {
     addLog(`Chunk received: ${(chunk.size / 1024).toFixed(1)}KB`);
   };
 
+  const handleFileUpload = (file: File) => {
+      // Clear existing recordings
+      setAudioChunks([]); 
+      setCombinedBlob(file);
+      
+      const url = URL.createObjectURL(file);
+      setAudioUrl(url);
+      
+      setAppState(AppState.PAUSED);
+      addLog(`File Uploaded: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+      
+      // Try to use filename as title if empty
+      if (!title) {
+          const name = file.name.replace(/\.[^/.]+$/, ""); // remove extension
+          setTitle(name);
+      }
+  };
+
   const handleRecordingChange = (isRecording: boolean) => {
     if (isRecording) {
-      if (appState !== AppState.RECORDING) setAppState(AppState.RECORDING);
+      if (appState !== AppState.RECORDING) {
+        setAppState(AppState.RECORDING);
+        // Clear previous uploads if starting fresh recording
+        if (combinedBlob && audioChunks.length === 0) {
+            setCombinedBlob(null);
+            setAudioUrl(null);
+        }
+      }
     } else {
        if (appState === AppState.RECORDING) {
          setAppState(AppState.PAUSED);
@@ -183,9 +209,10 @@ const App: React.FC = () => {
     
     try {
       addLog(`Processing Mode: ${mode}`);
+      addLog(`Selected Model: ${selectedModel}`);
       const mimeType = combinedBlob.type || 'audio/webm';
         
-      const newData = await processMeetingAudio(combinedBlob, mimeType, mode, addLog);
+      const newData = await processMeetingAudio(combinedBlob, mimeType, mode, selectedModel, addLog);
       addLog("Success! Response received.");
 
       let updatedData: MeetingData;
@@ -236,6 +263,8 @@ const App: React.FC = () => {
         isDriveConnected={isDriveConnected} 
         onConnectDrive={handleConnectDrive} 
         onDisconnectDrive={handleDisconnectDrive}
+        selectedModel={selectedModel}
+        onModelChange={setSelectedModel}
       />
 
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
@@ -252,7 +281,7 @@ const App: React.FC = () => {
             {appState === AppState.IDLE && !audioUrl && (
               <div className="text-center space-y-2 mb-4">
                 <h2 className="text-3xl font-bold text-slate-800">Capture your meeting</h2>
-                <p className="text-slate-500">Record audio to get instant summaries and action items.</p>
+                <p className="text-slate-500">Record audio or upload a file to get instant summaries.</p>
               </div>
             )}
 
@@ -278,6 +307,7 @@ const App: React.FC = () => {
               onDiscard={handleDiscard}
               onRecordingChange={handleRecordingChange}
               onSaveAudio={isDriveConnected ? handleManualAudioSave : undefined}
+              onFileUpload={handleFileUpload}
               audioUrl={audioUrl}
               debugLogs={debugLogs}
             />

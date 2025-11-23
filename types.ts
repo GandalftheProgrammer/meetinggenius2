@@ -10,6 +10,13 @@ export enum AppState {
 
 export type ProcessingMode = 'ALL' | 'NOTES_ONLY' | 'TRANSCRIPT_ONLY';
 
+export type GeminiModel = 
+  | 'gemini-3-pro-preview'
+  | 'gemini-2.0-flash'
+  | 'gemini-2.0-flash-lite-preview-02-05'
+  | 'gemini-1.5-pro'
+  | 'gemini-1.5-flash';
+
 export interface MeetingData {
   transcription: string;
   summary: string;
