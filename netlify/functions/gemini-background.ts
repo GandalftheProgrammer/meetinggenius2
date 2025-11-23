@@ -1,3 +1,4 @@
+
 import { Type } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 
@@ -62,9 +63,9 @@ export default async (req: Request) => {
     }
 
     // Use selected model or fallback to 3-pro-preview
-    const MODEL_NAME = model || "gemini-3-pro-preview";
+    const initialModel = model || "gemini-3-pro-preview";
 
-    console.log(`[Background] Starting job ${jobId} for file ${fileUri} using model ${MODEL_NAME}`);
+    console.log(`[Background] Starting job ${jobId} for file ${fileUri} using model ${initialModel}`);
 
     // Initialize Store
     const store = getStore({ name: "meeting-results", consistency: "strong" });
@@ -154,6 +155,7 @@ export default async (req: Request) => {
         ],
         generationConfig: {
             responseMimeType: "application/json",
+            maxOutputTokens: 8192, // INCREASED TO PREVENT TRUNCATION
             responseSchema: {
                 type: Type.OBJECT,
                 properties: schemaProperties,
@@ -162,26 +164,64 @@ export default async (req: Request) => {
         }
       };
 
-    // --- CALL GOOGLE ---
-    console.log(`[Background] Calling Gemini (${MODEL_NAME}) for ${jobId}...`);
+    // --- CALL GOOGLE WITH RETRY & FALLBACK ---
     
-    const googleResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`, 
-        {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-        }
-    );
+    // Helper to call API
+    const callGemini = async (modelName: string) => {
+        return fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, 
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            }
+        );
+    };
 
-    if (!googleResponse.ok) {
-        const err = await googleResponse.text();
-        console.error(`[Background] Gemini Error: ${err}`);
-        await store.setJSON(jobId, { status: 'ERROR', error: `Gemini API Error: ${err}` });
+    let response;
+    let success = false;
+    let usedModel = initialModel;
+    const FALLBACK_MODEL = "gemini-2.5-flash";
+
+    // Attempt 1: Selected Model
+    console.log(`[Background] Attempt 1 with ${usedModel}...`);
+    response = await callGemini(usedModel);
+
+    // Retry Logic for 503
+    if (response.status === 503) {
+        console.warn(`[Background] 503 Overloaded on ${usedModel}. Waiting 5s...`);
+        await new Promise(r => setTimeout(r, 5000));
+        
+        // Attempt 2: Selected Model
+        console.log(`[Background] Attempt 2 with ${usedModel}...`);
+        response = await callGemini(usedModel);
+    }
+
+    if (response.status === 503) {
+        console.warn(`[Background] 503 Overloaded again. Waiting 10s...`);
+        await new Promise(r => setTimeout(r, 10000));
+
+        // Attempt 3: Selected Model
+        console.log(`[Background] Attempt 3 with ${usedModel}...`);
+        response = await callGemini(usedModel);
+    }
+
+    // Fallback Logic
+    if (response.status === 503) {
+        console.warn(`[Background] Selected model ${usedModel} still overloaded. Switching to fallback: ${FALLBACK_MODEL}`);
+        usedModel = FALLBACK_MODEL;
+        // Attempt 4: Fallback Model
+        response = await callGemini(usedModel);
+    }
+
+    if (!response.ok) {
+        const err = await response.text();
+        console.error(`[Background] Gemini Error (${usedModel}): ${err}`);
+        await store.setJSON(jobId, { status: 'ERROR', error: `Gemini API Error (${usedModel}): ${err}` });
         return;
     }
 
-    const jsonResponse = await googleResponse.json();
+    const jsonResponse = await response.json();
     
     // Extract text from the candidate
     let fullText = "";
@@ -201,7 +241,7 @@ export default async (req: Request) => {
     }
 
     // --- SUCCESS: SAVE TO BLOB ---
-    console.log(`[Background] Job ${jobId} success. Saving to blob.`);
+    console.log(`[Background] Job ${jobId} success with ${usedModel}. Saving to blob.`);
     await store.setJSON(jobId, { status: 'COMPLETED', result: fullText });
 
   } catch (err: any) {
