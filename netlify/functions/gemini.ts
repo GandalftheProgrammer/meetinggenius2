@@ -27,6 +27,7 @@ export default async (req: Request) => {
     // 3. Parse Body
     const payload = await req.json();
     const { action } = payload;
+    // Use the requested robust model
     const MODEL_NAME = "gemini-3-pro-preview"; 
 
     // --- ACTION 1: AUTHORIZE UPLOAD (Handshake) ---
@@ -96,7 +97,7 @@ export default async (req: Request) => {
       });
     }
 
-    // --- ACTION 3: GENERATE CONTENT (Manual Streaming Fetch) ---
+    // --- ACTION 3: GENERATE CONTENT (Streaming with Heartbeat) ---
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
@@ -163,30 +164,77 @@ export default async (req: Request) => {
         }
       };
 
-      // Direct Fetch to Google API
-      const googleResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:streamGenerateContent?key=${apiKey}`, 
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
+      // Create a Custom Stream that mixes Heartbeat signals with the Gemini API response
+      const mixedStream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          let hasReceivedData = false;
+
+          // 1. Start the Heartbeat (Keep-Alive)
+          // Send a safe HTML comment every 2.5 seconds to keep Netlify connection open
+          const heartbeatInterval = setInterval(() => {
+            if (!hasReceivedData) {
+              try {
+                controller.enqueue(encoder.encode("<!-- KEEP_ALIVE_PING -->\n"));
+              } catch (e) {
+                // Controller might be closed if client disconnected
+                clearInterval(heartbeatInterval);
+              }
+            }
+          }, 2500);
+
+          try {
+            // 2. Call Google API
+            const googleResponse = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:streamGenerateContent?key=${apiKey}`, 
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+              }
+            );
+
+            if (!googleResponse.ok) {
+              clearInterval(heartbeatInterval);
+              const err = await googleResponse.text();
+              controller.enqueue(encoder.encode(JSON.stringify({ error: `Google API Error: ${err}` })));
+              controller.close();
+              return;
+            }
+
+            if (!googleResponse.body) {
+              clearInterval(heartbeatInterval);
+              controller.enqueue(encoder.encode(JSON.stringify({ error: "No response body" })));
+              controller.close();
+              return;
+            }
+
+            // 3. Pipe Google Response to Client
+            const reader = googleResponse.body.getReader();
+            
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              // Once we have real data, we mark it so heartbeat stops sending
+              hasReceivedData = true;
+              clearInterval(heartbeatInterval);
+              
+              controller.enqueue(value);
+            }
+            
+            controller.close();
+
+          } catch (error: any) {
+            clearInterval(heartbeatInterval);
+            const errJson = JSON.stringify({ error: error.message || "Unknown stream error" });
+            controller.enqueue(encoder.encode(errJson));
+            controller.close();
+          }
         }
-      );
+      });
 
-      if (!googleResponse.ok) {
-          const err = await googleResponse.text();
-          console.error("Google API Error:", err);
-          return new Response(JSON.stringify({ error: `Google API Error: ${err}` }), { 
-              status: googleResponse.status,
-              headers: { 'Content-Type': 'application/json' }
-          });
-      }
-
-      if (!googleResponse.body) {
-        return new Response(JSON.stringify({ error: "No response body from Google" }), { status: 500 });
-      }
-
-      return new Response(googleResponse.body, {
+      return new Response(mixedStream, {
         headers: { "Content-Type": "application/json" }
       });
     }

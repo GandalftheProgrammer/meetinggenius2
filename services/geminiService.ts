@@ -80,8 +80,8 @@ export const processMeetingAudio = async (
     if (!fileUri) throw new Error("File URI missing after upload.");
     log(`File upload finalized. URI: ${fileUri}`);
 
-    // 3. Generate (Streaming)
-    log("Step 3: Sending generation request (Streaming)...");
+    // 3. Generate (Streaming with Keep-Alive)
+    log("Step 3: Sending generation request...");
     
     const genResponse = await fetch('/.netlify/functions/gemini', {
         method: 'POST',
@@ -89,7 +89,7 @@ export const processMeetingAudio = async (
         body: JSON.stringify({ action: 'generate', fileUri, mimeType, mode })
     });
     
-    log(`Step 3: Response Status: ${genResponse.status} ${genResponse.statusText}`);
+    log(`Step 3: Connection Established. Status: ${genResponse.status}`);
 
     if (!genResponse.ok) {
         const errorText = await genResponse.text();
@@ -97,38 +97,49 @@ export const processMeetingAudio = async (
         throw new Error(`Backend Error: ${errorText}`);
     }
 
-    // STREAM READER LOGIC for Raw REST API
+    // STREAM READER LOGIC
     const reader = genResponse.body?.getReader();
     if (!reader) throw new Error("Response body is not a stream");
 
     const decoder = new TextDecoder();
     let rawAccumulatedText = '';
-    let chunkCount = 0;
+    let hasReceivedHeartbeat = false;
     
-    log("Step 4: Reading Stream initialized. Waiting for data...");
+    log("Step 4: Waiting for Gemini (this can take up to a minute)...");
 
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         
-        chunkCount++;
         const chunk = decoder.decode(value, { stream: true });
-        rawAccumulatedText += chunk;
         
-        // Log every few chunks to show progress without spamming
-        if (chunkCount % 5 === 0 || chunkCount === 1) {
-            log(`Received chunk #${chunkCount} (Total bytes: ${rawAccumulatedText.length})`);
+        // Check for heartbeats to reassure user
+        if (chunk.includes("KEEP_ALIVE_PING")) {
+             if (!hasReceivedHeartbeat) {
+                 log("Heartbeat received (Gemini is thinking, connection active)...");
+                 hasReceivedHeartbeat = true;
+             }
+        } else {
+            // Log only when we get real data chunks to avoid spam
+            if (chunk.trim().length > 5) {
+                log(`Data chunk received (${chunk.length} bytes)`);
+            }
         }
+        
+        rawAccumulatedText += chunk;
     }
 
     log(`Stream complete. Total Length: ${rawAccumulatedText.length}`);
-    log("Step 5: Parsing Response...");
+    log("Step 5: Cleaning and Parsing Response...");
+    
+    // CRITICAL: Remove the Heartbeat tags before parsing JSON
+    const cleanJsonText = rawAccumulatedText.replace(/<!-- KEEP_ALIVE_PING -->\n?/g, '');
     
     let fullText = "";
     
     try {
         // Try strict JSON parse first
-        const responseArray = JSON.parse(rawAccumulatedText);
+        const responseArray = JSON.parse(cleanJsonText);
         
         if (Array.isArray(responseArray)) {
             log("Format: Valid JSON Array detected.");
@@ -149,18 +160,16 @@ export const processMeetingAudio = async (
     } catch (e: any) {
         log(`JSON PARSE FAILED: ${e.message}`);
         log("--- RAW RESPONSE START (First 500 chars) ---");
-        log(rawAccumulatedText.substring(0, 500));
+        log(cleanJsonText.substring(0, 500)); // Log the CLEAN text
         log("--- RAW RESPONSE END ---");
         
-        // Fallback: It might be malformed JSON (e.g. ][ instead of ],[ ). 
-        // Or it might be an HTML error page from Netlify timeout.
-        if (rawAccumulatedText.trim().startsWith("<!DOCTYPE html>")) {
+        if (cleanJsonText.trim().startsWith("<!DOCTYPE html>")) {
              throw new Error("Received HTML (likely a Server Timeout or 502 Bad Gateway) instead of JSON.");
         }
 
         // Attempt to just treat it as text if it's not JSON
         log("Attempting to use raw text as fallback...");
-        fullText = rawAccumulatedText; 
+        fullText = cleanJsonText; 
     }
 
     if (!fullText) {
