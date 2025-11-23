@@ -45,12 +45,18 @@ const App: React.FC = () => {
 
   // Handle user clicking "Connect Drive"
   const handleConnectDrive = () => {
-      // Prompt for folder name to satisfy user request to choose location
-      const folderName = prompt("Choose a Google Drive folder name for your meeting data (Main Folder):", localStorage.getItem('drive_folder_name') || "MeetingGenius");
+      const storedName = localStorage.getItem('drive_folder_name');
       
-      if (folderName) {
-          localStorage.setItem('drive_folder_name', folderName);
+      // If we already have a folder name stored, skip the prompt and just reconnect auth
+      if (storedName) {
           connectToDrive();
+      } else {
+          // First time connection: Ask for folder
+          const folderName = prompt("Choose a Google Drive folder name for your meeting data (Main Folder):", "MeetingGenius");
+          if (folderName) {
+              localStorage.setItem('drive_folder_name', folderName);
+              connectToDrive();
+          }
       }
   };
 
@@ -106,6 +112,20 @@ const App: React.FC = () => {
     }
   };
 
+  // Manual Save Trigger (Passed to Results component)
+  const handleManualAudioSave = async () => {
+      if (!combinedBlob || !isDriveConnected) {
+          if (!isDriveConnected) {
+              // Try to connect if user clicks save but isn't connected
+              handleConnectDrive();
+              return; // User has to click again after connection
+          }
+          return;
+      }
+      let currentTitle = title.trim() || `Meeting ${new Date().toLocaleDateString()}`;
+      await saveAudioBackup(combinedBlob, currentTitle);
+  };
+
   // Helper to save Notes/Transcript to Drive
   const saveResultsToDrive = async (data: MeetingData, currentTitle: string) => {
     if (!isDriveConnected) return;
@@ -117,7 +137,7 @@ const App: React.FC = () => {
         
         // Upload Notes if they exist
         if (data.summary) {
-            const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Decisions\n${data.decisions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
+            const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions & Insights\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
             const result = await uploadTextToDrive(`${safeTitle}_notes.md`, notesContent, 'Notes');
             if (result.webViewLink) addLog(`Notes saved: ${result.webViewLink}`);
         }
@@ -166,7 +186,7 @@ const App: React.FC = () => {
             ...meetingData,
             transcription: newData.transcription || meetingData.transcription,
             summary: newData.summary || meetingData.summary,
-            decisions: newData.decisions.length > 0 ? newData.decisions : meetingData.decisions,
+            conclusions: newData.conclusions.length > 0 ? newData.conclusions : meetingData.conclusions,
             actionItems: newData.actionItems.length > 0 ? newData.actionItems : meetingData.actionItems
         };
       } else {
@@ -261,6 +281,7 @@ const App: React.FC = () => {
             onReset={handleDiscard}
             onGenerateMissing={handleProcessAudio}
             isProcessingMissing={isGeneratingMissing} 
+            onSaveAudio={isDriveConnected ? handleManualAudioSave : undefined}
           />
         )}
 

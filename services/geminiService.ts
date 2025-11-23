@@ -171,7 +171,7 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
              return {
                  transcription: jsonText,
                  summary: "Raw text received (could not parse JSON)",
-                 decisions: [],
+                 conclusions: [],
                  actionItems: []
              };
         }
@@ -182,7 +182,7 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         return {
             transcription: rawData.transcription || "",
             summary: rawData.summary || "",
-            decisions: rawData.decisions || [],
+            conclusions: rawData.conclusions || rawData.decisions || [], // Handle both for backward compatibility
             actionItems: rawData.actionItems || [],
         };
     } catch (e) {
@@ -190,7 +190,7 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         return {
             transcription: jsonText, 
             summary: "Error parsing structured notes.",
-            decisions: [],
+            conclusions: [],
             actionItems: []
         };
     }

@@ -35,7 +35,7 @@ export default async (req: Request) => {
     // Mark as started
     await store.setJSON(jobId, { status: 'PROCESSING' });
 
-    // FIXED: Using the specific model requested by user
+    // Using the specific model requested by user
     const MODEL_NAME = "gemini-3-pro-preview"; 
 
     // --- CONSTRUCT PROMPT ---
@@ -49,20 +49,28 @@ export default async (req: Request) => {
         
         CRITICAL INSTRUCTION - LANGUAGE DETECTION:
         1. Detect the dominant language spoken in the audio.
-        2. You MUST write the "summary", "decisions", and "actionItems" in that EXACT SAME LANGUAGE.
+        2. You MUST write the "summary", "conclusions", and "actionItems" in that EXACT SAME LANGUAGE.
         
         CRITICAL INSTRUCTION - ACCURACY & HALLUCINATIONS:
-        1. **NO INVENTIONS:** You must NOT invent topics, decisions, or action items that were not explicitly spoken about. If a topic was not discussed, do not include it.
-        2. **PROPOSALS VS DECISIONS:** 
-           - If a point was proposed/suggested but not explicitly confirmed or agreed upon, you MUST still record it so it is not forgotten, BUT you must phrase it clearly as a "Suggestion" or "Proposal" (e.g., "Proposed: X", "Suggested: Y"). 
-           - Only list items as "Decisions" if there was a clear agreement or consensus.
-        3. **LITERALNESS:** Stay close to the speakers' actual phrasing. Do not over-interpret vague statements into concrete tasks. If the speaker says "we might look into X", do not write "Action Item: Look into X". Write "Action Item: Evaluate if we should look into X".
+        
+        1. **CONCLUSIONS & INSIGHTS (Flexible):** 
+           - For the "conclusions" section, you are allowed to be intelligent.
+           - Identify key decisions, consensus reached, and overarching insights.
+           - You may synthesize implied conclusions even if they weren't stated as a formal "motion".
+           - Focus on the *outcome* of discussions.
+
+        2. **ACTION ITEMS (STRICT & LITERAL):** 
+           - For the "actionItems" section, you must be EXTREMELY STRICT.
+           - **NO INVENTIONS:** Do not create tasks that "make sense" but weren't said.
+           - **EXPLICIT ONLY:** Only list an action item if someone proposed it or agreed to it explicitly (e.g., "I will do X", "Let's check Y").
+           - **LITERAL PHRASING:** Use the literal wording of the task as much as possible. Do not interpret "We should probably think about marketing" as "Action: Create full marketing plan". Instead write: "Action: Consider thinking about marketing".
+           - **PROPOSALS:** If something is proposed but not confirmed, list it as "Proposed: [Task]".
         
         FALLBACK JSON (Only if silence):
         {
             "transcription": "[No intelligible speech detected]",
             "summary": "No conversation was detected in the audio recording.",
-            "decisions": [],
+            "conclusions": [],
             "actionItems": []
         }
       `;
@@ -70,8 +78,10 @@ export default async (req: Request) => {
       let taskInstruction = "";
       const transcriptionSchema = { type: Type.STRING, description: "Full verbatim transcription" };
       const summarySchema = { type: Type.STRING, description: "A concise summary" };
-      const decisionsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Key decisions and agreed points" };
-      const actionItemsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Action items and suggestions to follow up on" };
+      
+      // Changed from decisions to conclusions
+      const conclusionsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Key conclusions, decisions, and insights from the meeting" };
+      const actionItemsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Strictly explicitly agreed tasks or proposals" };
 
       let schemaProperties: any = {};
       let requiredFields: string[] = [];
@@ -82,12 +92,12 @@ export default async (req: Request) => {
         requiredFields = ["transcription"];
       } else if (mode === 'NOTES_ONLY') {
         taskInstruction = "Your task is to create structured meeting notes.";
-        schemaProperties = { summary: summarySchema, decisions: decisionsSchema, actionItems: actionItemsSchema };
-        requiredFields = ["summary", "decisions", "actionItems"];
+        schemaProperties = { summary: summarySchema, conclusions: conclusionsSchema, actionItems: actionItemsSchema };
+        requiredFields = ["summary", "conclusions", "actionItems"];
       } else {
         taskInstruction = "Your task is to Transcribe the audio verbatim AND create structured meeting notes.";
-        schemaProperties = { transcription: transcriptionSchema, summary: summarySchema, decisions: decisionsSchema, actionItems: actionItemsSchema };
-        requiredFields = ["transcription", "summary", "decisions", "actionItems"];
+        schemaProperties = { transcription: transcriptionSchema, summary: summarySchema, conclusions: conclusionsSchema, actionItems: actionItemsSchema };
+        requiredFields = ["transcription", "summary", "conclusions", "actionItems"];
       }
 
       const requestBody = {

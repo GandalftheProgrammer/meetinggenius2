@@ -13,7 +13,7 @@ export type ProcessingMode = 'ALL' | 'NOTES_ONLY' | 'TRANSCRIPT_ONLY';
 export interface MeetingData {
   transcription: string;
   summary: string;
-  decisions: string[];
+  conclusions: string[]; // Renamed from decisions to allow for broader insights
   actionItems: string[];
 }
 

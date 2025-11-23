@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Download, FileText, ListChecks, ArrowLeft, Loader2, PlusCircle } from 'lucide-react';
+import { Download, FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, CheckCircle } from 'lucide-react';
 import { MeetingData, ProcessingMode } from '../types';
 
 interface ResultsProps {
@@ -10,6 +10,7 @@ interface ResultsProps {
   onReset: () => void;
   onGenerateMissing: (mode: ProcessingMode) => void;
   isProcessingMissing: boolean;
+  onSaveAudio?: () => void;
 }
 
 const Results: React.FC<ResultsProps> = ({ 
@@ -17,9 +18,12 @@ const Results: React.FC<ResultsProps> = ({
   title, 
   onReset, 
   onGenerateMissing,
-  isProcessingMissing
+  isProcessingMissing,
+  onSaveAudio
 }) => {
   const [activeTab, setActiveTab] = useState<'notes' | 'transcription'>('notes');
+  const [isAudioSaving, setIsAudioSaving] = useState(false);
+  const [audioSaved, setAudioSaved] = useState(false);
 
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
@@ -33,8 +37,8 @@ const Results: React.FC<ResultsProps> = ({
 ## Summary
 ${data.summary}
 
-## Key Decisions
-${data.decisions.map(d => `- ${d}`).join('\n')}
+## Conclusions & Insights
+${data.conclusions.map(d => `- ${d}`).join('\n')}
 
 ## Action Items
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
@@ -54,6 +58,21 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleManualAudioSave = async () => {
+      if (!onSaveAudio) return;
+      setIsAudioSaving(true);
+      try {
+          await onSaveAudio();
+          setAudioSaved(true);
+          setTimeout(() => setAudioSaved(false), 3000);
+      } catch (e) {
+          console.error(e);
+          alert("Failed to save audio to Drive");
+      } finally {
+          setIsAudioSaving(false);
+      }
   };
 
   // Render a placeholder with a button if content is missing
@@ -110,7 +129,31 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           Start New Recording
         </button>
         
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+           
+           {/* Manual Audio Save Button */}
+           {onSaveAudio && (
+             <button
+               onClick={handleManualAudioSave}
+               disabled={isAudioSaving || audioSaved}
+               className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm font-medium transition-colors shadow-sm ${
+                   audioSaved 
+                   ? 'bg-green-50 border-green-200 text-green-700' 
+                   : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+               }`}
+               title="Manually save audio to Google Drive"
+             >
+               {isAudioSaving ? (
+                 <Loader2 className="w-4 h-4 animate-spin" />
+               ) : audioSaved ? (
+                 <CheckCircle className="w-4 h-4" />
+               ) : (
+                 <FileAudio className="w-4 h-4" />
+               )}
+               {audioSaved ? "Saved!" : "Save Audio to Drive"}
+             </button>
+           )}
+
            {hasNotes && (
              <button
                onClick={() => downloadFile(notesMarkdown, `${title.replace(/\s+/g, '_')}_notes.md`)}
