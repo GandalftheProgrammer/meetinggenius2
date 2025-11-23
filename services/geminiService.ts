@@ -74,8 +74,8 @@ export const processMeetingAudio = async (
     if (!fileUri) throw new Error("File URI missing after upload.");
     console.log(`Step 2 Complete. File URI: ${fileUri}`);
 
-    // 3. Generate: Ask Backend to process the file
-    console.log("Step 3: generating...");
+    // 3. Generate: Ask Backend to process the file (STREAMING)
+    console.log("Step 3: generating (Streamed)...");
     const genResponse = await fetch('/.netlify/functions/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -83,9 +83,26 @@ export const processMeetingAudio = async (
     });
     
     if (!genResponse.ok) throw new Error(await genResponse.text());
-    const genResult = await genResponse.json();
+
+    // Reading the stream from the backend
+    const reader = genResponse.body?.getReader();
+    if (!reader) throw new Error("Response body is not readable");
+
+    const decoder = new TextDecoder();
+    let jsonText = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Decode chunk and append to buffer
+        const chunk = decoder.decode(value, { stream: true });
+        jsonText += chunk;
+        // NOTE: We do not parse partial JSON here because Gemini returns a single JSON object.
+        // We just need the stream to keep the connection alive.
+    }
     
-    return parseResponse(genResult.text, mode);
+    console.log("Stream complete. Parsing JSON...");
+    return parseResponse(jsonText, mode);
 
   } catch (error) {
     console.error("Error in SaaS flow:", error);
@@ -120,8 +137,8 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     } catch (e) {
         console.error("Failed to parse JSON from AI", jsonText);
         return {
-            transcription: "Error parsing response",
-            summary: "Error parsing response",
+            transcription: "Error parsing response or incomplete stream.",
+            summary: "Error parsing response.",
             decisions: [],
             actionItems: []
         };

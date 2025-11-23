@@ -1,20 +1,34 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
+import { Buffer } from "buffer";
 
-// The API Key is SECURELY loaded here on the server.
 const apiKey = process.env.API_KEY;
 if (!apiKey) throw new Error("API_KEY is missing in Netlify Env Vars");
 
 const ai = new GoogleGenAI({ apiKey });
 const MODEL_NAME = "gemini-3-pro-preview";
 
-export const handler = async (event: any) => {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+/**
+ * Netlify Function using Web Standard API (Request/Response)
+ * This is required to support Streaming responses.
+ */
+export default async (req: Request) => {
+  // CORS Preflight handling (if needed, though usually handled by Netlify config)
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+      },
+    });
+  }
+
+  if (req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
   }
 
   try {
-    const payload = JSON.parse(event.body);
+    const payload = await req.json();
     const { action } = payload;
 
     // --- ACTION 1: AUTHORIZE UPLOAD (Handshake) ---
@@ -45,27 +59,23 @@ export const handler = async (event: any) => {
 
       const uploadUrl = initResponse.headers.get('x-goog-upload-url');
       
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ uploadUrl }),
+      return new Response(JSON.stringify({ uploadUrl }), {
         headers: { 'Content-Type': 'application/json' }
-      };
+      });
     }
 
     // --- ACTION 2: UPLOAD CHUNK (Proxy) ---
-    // Receives Base64 data from Frontend, converts to Buffer, forwards to Google
     if (action === 'upload_chunk') {
       const { uploadUrl, chunkData, offset, totalSize, isLastChunk } = payload;
       
-      // Convert Base64 back to Binary Buffer
+      // Buffer is available in Node.js environment
       const buffer = Buffer.from(chunkData, 'base64');
       const chunkLength = buffer.length;
       
       const command = isLastChunk ? 'upload, finalize' : 'upload';
       
-      // PUT to Google using the Signed URL
       const putResponse = await fetch(uploadUrl, {
-        method: 'POST', // Google Resumable supports POST if offset headers are provided
+        method: 'POST',
         headers: {
           'Content-Length': chunkLength.toString(),
           'X-Goog-Upload-Offset': offset,
@@ -79,24 +89,20 @@ export const handler = async (event: any) => {
          throw new Error(`Google Chunk Upload Failed: ${errText}`);
       }
 
-      // If finalized, Google returns the File Object JSON
       let body = {};
       if (isLastChunk) {
         body = await putResponse.json();
       }
 
-      return {
-        statusCode: 200,
-        body: JSON.stringify(body),
+      return new Response(JSON.stringify(body), {
         headers: { 'Content-Type': 'application/json' }
-      };
+      });
     }
 
-    // --- ACTION 3: GENERATE CONTENT ---
+    // --- ACTION 3: GENERATE CONTENT (STREAMING) ---
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
-      // 1. Construct Prompts
       let systemInstruction = `
         You are an expert professional meeting secretary. 
         Listen to the attached audio recording of a meeting.
@@ -141,8 +147,8 @@ export const handler = async (event: any) => {
         requiredFields = ["transcription", "summary", "decisions", "actionItems"];
       }
 
-      // 2. Call Gemini with the File URI
-      const response = await ai.models.generateContent({
+      // Use generateContentStream instead of generateContent
+      const result = await ai.models.generateContentStream({
         model: MODEL_NAME,
         contents: {
           parts: [
@@ -160,20 +166,40 @@ export const handler = async (event: any) => {
         }
       });
 
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ text: response.text }),
-        headers: { 'Content-Type': 'application/json' }
-      };
+      // Create a ReadableStream to pipe chunks to the client
+      const stream = new ReadableStream({
+        async start(controller) {
+            const encoder = new TextEncoder();
+            try {
+                for await (const chunk of result) {
+                    const text = chunk.text;
+                    if (text) {
+                        controller.enqueue(encoder.encode(text));
+                    }
+                }
+                controller.close();
+            } catch (err) {
+                console.error("Streaming error:", err);
+                controller.error(err);
+            }
+        }
+      });
+
+      return new Response(stream, {
+        headers: { 
+            'Content-Type': 'application/json',
+            'Transfer-Encoding': 'chunked'
+        }
+      });
     }
 
-    return { statusCode: 400, body: "Invalid Action" };
+    return new Response("Invalid Action", { status: 400 });
 
   } catch (error: any) {
     console.error('Backend Error:', error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
-    };
+    return new Response(JSON.stringify({ error: error.message }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+    });
   }
 };
