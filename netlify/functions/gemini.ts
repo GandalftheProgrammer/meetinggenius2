@@ -3,32 +3,17 @@ import { Buffer } from "buffer";
 
 const apiKey = process.env.API_KEY;
 
-// Helper to extract a clean message from various error formats
+// Helper to sanitize error messages
 const getErrorMessage = (error: any): string => {
-  if (!error) return "Unknown error occurred";
-
-  if (typeof error === 'string') {
-    try {
-      const parsed = JSON.parse(error);
-      return getErrorMessage(parsed);
-    } catch {
-      return error;
-    }
-  }
-  
-  if (error.error) {
-    if (typeof error.error === 'object') {
-        return error.error.message || error.error.status || "Google API Error";
-    }
-    return error.error;
-  }
-  
+  if (!error) return "Unknown error";
+  if (typeof error === 'string') return error;
   if (error.message) return error.message;
-  
   return JSON.stringify(error);
 };
 
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
+// We use the Flash model for speed/reliability in this demo, but user requested Pro logic.
+// Keeping gemini-3-pro-preview as requested.
 const MODEL_NAME = "gemini-3-pro-preview";
 
 export default async (req: Request) => {
@@ -49,14 +34,15 @@ export default async (req: Request) => {
 
   try {
     if (!apiKey) {
-      console.error("Missing API_KEY in Netlify Environment Variables");
-      throw new Error("Server Configuration Error: API_KEY is missing in Netlify Site Settings.");
+      return new Response(JSON.stringify({ error: "Server Configuration Error: API_KEY missing." }), {
+        status: 401, headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     const payload = await req.json();
     const { action } = payload;
 
-    // --- ACTION 1: AUTHORIZE UPLOAD (Handshake) ---
+    // --- ACTION 1: AUTHORIZE UPLOAD ---
     if (action === 'authorize_upload') {
       const { mimeType, fileSize } = payload;
       
@@ -69,83 +55,49 @@ export default async (req: Request) => {
           'X-Goog-Upload-Header-Content-Type': mimeType,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ 
-            file: {
-                display_name: `Meeting_Audio_${Date.now()}` 
-            }
-        })
+        body: JSON.stringify({ file: { display_name: `Meeting_Audio_${Date.now()}` } })
       });
 
       if (!initResponse.ok) {
-         const errText = await initResponse.text();
-         throw new Error(`Google Upload Handshake Failed: ${getErrorMessage(errText)}`);
+         throw new Error(`Google Upload Init Failed: ${await initResponse.text()}`);
       }
 
       const uploadUrl = initResponse.headers.get('x-goog-upload-url');
-      
-      return new Response(JSON.stringify({ uploadUrl }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return new Response(JSON.stringify({ uploadUrl }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // --- ACTION 2: UPLOAD CHUNK (Proxy) ---
+    // --- ACTION 2: UPLOAD CHUNK ---
     if (action === 'upload_chunk') {
       const { uploadUrl, chunkData, offset, totalSize, isLastChunk } = payload;
-      
       const buffer = Buffer.from(chunkData, 'base64');
-      const chunkLength = buffer.length;
-      const command = isLastChunk ? 'upload, finalize' : 'upload';
       
       const putResponse = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
-          'Content-Length': chunkLength.toString(),
+          'Content-Length': buffer.length.toString(),
           'X-Goog-Upload-Offset': offset,
-          'X-Goog-Upload-Command': command,
+          'X-Goog-Upload-Command': isLastChunk ? 'upload, finalize' : 'upload',
         },
         body: buffer
       });
 
       if (!putResponse.ok) {
-         const errText = await putResponse.text();
-         throw new Error(`Google Chunk Upload Failed: ${getErrorMessage(errText)}`);
+         throw new Error(`Chunk Upload Failed: ${await putResponse.text()}`);
       }
 
       let body = {};
-      if (isLastChunk) {
-        body = await putResponse.json();
-      }
-
-      return new Response(JSON.stringify(body), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      if (isLastChunk) body = await putResponse.json();
+      
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // --- ACTION 3: GENERATE CONTENT (STREAMING WITH HEARTBEAT) ---
+    // --- ACTION 3: GENERATE (STREAMING) ---
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
-      let systemInstruction = `
-        You are an expert professional meeting secretary. 
-        Listen to the attached audio recording of a meeting.
-        
-        CRITICAL INSTRUCTION - SILENCE DETECTION:
-        Before processing, verify if there is intelligible speech in the audio.
-        - If the audio is silent or just noise, output the FALLBACK JSON.
-        
-        CRITICAL INSTRUCTION - LANGUAGE DETECTION:
-        1. Detect the dominant language spoken in the audio.
-        2. You MUST write the "summary", "decisions", and "actionItems" in that EXACT SAME LANGUAGE.
-        
-        FALLBACK JSON (Only if silence):
-        {
-            "transcription": "[No intelligible speech detected]",
-            "summary": "No conversation was detected in the audio recording.",
-            "decisions": [],
-            "actionItems": []
-        }
-      `;
-
+      let systemInstruction = `You are an expert meeting secretary. Listen to the audio. 
+      If silent, return fallback JSON. Detect language and use it for output.`;
+      
       let taskInstruction = "";
       const transcriptionSchema = { type: Type.STRING, description: "Full verbatim transcription" };
       const summarySchema = { type: Type.STRING, description: "A concise summary" };
@@ -156,86 +108,93 @@ export default async (req: Request) => {
       let requiredFields: string[] = [];
 
       if (mode === 'TRANSCRIPT_ONLY') {
-        taskInstruction = "Your task is to Transcribe the audio verbatim. Do not generate summary or notes.";
+        taskInstruction = "Transcribe audio verbatim. No notes.";
         schemaProperties = { transcription: transcriptionSchema };
         requiredFields = ["transcription"];
       } else if (mode === 'NOTES_ONLY') {
-        taskInstruction = "Your task is to create structured meeting notes.";
+        taskInstruction = "Create structured meeting notes.";
         schemaProperties = { summary: summarySchema, decisions: decisionsSchema, actionItems: actionItemsSchema };
         requiredFields = ["summary", "decisions", "actionItems"];
       } else {
-        taskInstruction = "Your task is to Transcribe the audio verbatim AND create structured meeting notes.";
+        taskInstruction = "Transcribe audio AND create notes.";
         schemaProperties = { transcription: transcriptionSchema, summary: summarySchema, decisions: decisionsSchema, actionItems: actionItemsSchema };
         requiredFields = ["transcription", "summary", "decisions", "actionItems"];
       }
 
-      // Create stream immediately to send headers to client fast
       const stream = new ReadableStream({
         async start(controller) {
-            const encoder = new TextEncoder();
-            
-            // HEARTBEAT: Send a space every 5 seconds to keep the Load Balancer happy
-            // while Gemini is "thinking". Client JSON parser will ignore these spaces.
-            const heartbeatInterval = setInterval(() => {
+          const encoder = new TextEncoder();
+          let heartbeatInterval: any = null;
+
+          try {
+             // 1. Send Heartbeats ONLY during "Thinking" phase.
+             // We send a space every 5 seconds to keep LB alive.
+             heartbeatInterval = setInterval(() => {
                 try {
-                    controller.enqueue(encoder.encode(" "));
-                } catch (e) {
-                    clearInterval(heartbeatInterval);
+                  controller.enqueue(encoder.encode(" ")); 
+                } catch(e) {
+                  clearInterval(heartbeatInterval);
                 }
-            }, 5000);
+             }, 5000);
 
-            try {
-                // Perform the actual API call INSIDE the stream start
-                const result = await ai.models.generateContentStream({
-                    model: MODEL_NAME,
-                    contents: {
-                        parts: [
-                            { fileData: { fileUri: fileUri, mimeType: mimeType } },
-                            { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
-                        ]
+             // 2. Start Generation
+             const result = await ai.models.generateContentStream({
+                model: MODEL_NAME,
+                contents: {
+                    parts: [
+                        { fileData: { fileUri: fileUri, mimeType: mimeType } },
+                        { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
+                    ]
+                },
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: schemaProperties,
+                        required: requiredFields,
                     },
-                    config: {
-                        responseMimeType: "application/json",
-                        responseSchema: {
-                            type: Type.OBJECT,
-                            properties: schemaProperties,
-                            required: requiredFields,
-                        },
-                    }
-                });
-
-                for await (const chunk of result) {
-                    const text = chunk.text;
-                    if (text) {
-                        controller.enqueue(encoder.encode(text));
-                    }
                 }
-            } catch (err: any) {
-                console.error("Streaming error:", err);
-                // We cannot change headers now, but the stream will close.
-                // The client will see a malformed JSON error.
-            } finally {
-                clearInterval(heartbeatInterval);
-                controller.close();
-            }
+             });
+
+             // 3. Pump data
+             for await (const chunk of result) {
+                // CRITICAL: Stop heartbeat as soon as real data starts to avoid JSON corruption.
+                if (heartbeatInterval) {
+                  clearInterval(heartbeatInterval);
+                  heartbeatInterval = null;
+                }
+
+                const text = chunk.text();
+                if (text) {
+                    controller.enqueue(encoder.encode(text));
+                }
+             }
+
+             controller.close();
+          } catch (err) {
+             console.error("Stream generation error:", err);
+             if (heartbeatInterval) clearInterval(heartbeatInterval);
+             
+             const errorMsg = getErrorMessage(err);
+             // Send error as JSON so client can parse it
+             controller.enqueue(encoder.encode(JSON.stringify({ error: errorMsg })));
+             controller.close();
+          }
         }
       });
 
+      // Return stream immediately
       return new Response(stream, {
-        headers: { 
-            'Content-Type': 'application/json',
-            'Transfer-Encoding': 'chunked'
-        }
+        headers: { 'Content-Type': 'application/json' }
       });
     }
 
     return new Response("Invalid Action", { status: 400 });
 
   } catch (error: any) {
-    console.error('Backend Error:', error);
-    const cleanMessage = getErrorMessage(error);
-    return new Response(JSON.stringify({ error: cleanMessage }), { 
-        status: error.status || 500,
+    console.error('General Backend Error:', error);
+    return new Response(JSON.stringify({ error: getErrorMessage(error) }), { 
+        status: 500,
         headers: { 'Content-Type': 'application/json' }
     });
   }
