@@ -1,21 +1,33 @@
+import { Type } from "@google/genai";
 
-import { GoogleGenAI, Type } from "@google/genai";
+// We use the Web Standard API (Request/Response) to support streaming
+export default async (req: Request) => {
+  // 1. CORS Preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
+  }
 
-// The API Key is SECURELY loaded here on the server.
-const apiKey = process.env.API_KEY;
-if (!apiKey) throw new Error("API_KEY is missing in Netlify Env Vars");
-
-const ai = new GoogleGenAI({ apiKey });
-const MODEL_NAME = "gemini-3-pro-preview";
-
-export const handler = async (event: any) => {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+  if (req.method !== 'POST') {
+    return new Response("Method Not Allowed", { status: 405 });
   }
 
   try {
-    const payload = JSON.parse(event.body);
+    // 2. Auth: Load API Key
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+        return new Response(JSON.stringify({ error: "API_KEY not configured on server" }), { status: 500 });
+    }
+    
+    // 3. Parse Body
+    const payload = await req.json();
     const { action } = payload;
+    const MODEL_NAME = "gemini-3-pro-preview"; 
 
     // --- ACTION 1: AUTHORIZE UPLOAD (Handshake) ---
     if (action === 'authorize_upload') {
@@ -39,21 +51,17 @@ export const handler = async (event: any) => {
 
       if (!initResponse.ok) {
          const errText = await initResponse.text();
-         console.error("Google Upload Init Failed", initResponse.status, errText);
          throw new Error(`Google Handshake Failed (${initResponse.status}): ${errText}`);
       }
 
       const uploadUrl = initResponse.headers.get('x-goog-upload-url');
       
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ uploadUrl }),
-        headers: { 'Content-Type': 'application/json' }
-      };
+      return new Response(JSON.stringify({ uploadUrl }), {
+          headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     // --- ACTION 2: UPLOAD CHUNK (Proxy) ---
-    // Receives Base64 data from Frontend, converts to Buffer, forwards to Google
     if (action === 'upload_chunk') {
       const { uploadUrl, chunkData, offset, totalSize, isLastChunk } = payload;
       
@@ -63,9 +71,8 @@ export const handler = async (event: any) => {
       
       const command = isLastChunk ? 'upload, finalize' : 'upload';
       
-      // PUT to Google using the Signed URL
       const putResponse = await fetch(uploadUrl, {
-        method: 'POST', // Google Resumable supports POST if offset headers are provided
+        method: 'POST',
         headers: {
           'Content-Length': chunkLength.toString(),
           'X-Goog-Upload-Offset': offset,
@@ -79,24 +86,21 @@ export const handler = async (event: any) => {
          throw new Error(`Google Chunk Upload Failed: ${errText}`);
       }
 
-      // If finalized, Google returns the File Object JSON
       let body = {};
       if (isLastChunk) {
         body = await putResponse.json();
       }
 
-      return {
-        statusCode: 200,
-        body: JSON.stringify(body),
-        headers: { 'Content-Type': 'application/json' }
-      };
+      return new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' }
+      });
     }
 
-    // --- ACTION 3: GENERATE CONTENT ---
+    // --- ACTION 3: GENERATE CONTENT (Manual Streaming Fetch) ---
+    // We utilize manual fetch instead of the SDK to prevent 401 errors in the serverless environment
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
-      // 1. Construct Prompts
       let systemInstruction = `
         You are an expert professional meeting secretary. 
         Listen to the attached audio recording of a meeting.
@@ -141,16 +145,17 @@ export const handler = async (event: any) => {
         requiredFields = ["transcription", "summary", "decisions", "actionItems"];
       }
 
-      // 2. Call Gemini with the File URI
-      const response = await ai.models.generateContent({
-        model: MODEL_NAME,
-        contents: {
-          parts: [
-             { fileData: { fileUri: fileUri, mimeType: mimeType } },
-             { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
-          ]
-        },
-        config: {
+      // Construct the raw JSON payload for the REST API
+      const requestBody = {
+        contents: [
+           { 
+             parts: [
+               { fileData: { fileUri: fileUri, mimeType: mimeType } },
+               { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
+             ]
+           }
+        ],
+        generationConfig: {
             responseMimeType: "application/json",
             responseSchema: {
                 type: Type.OBJECT,
@@ -158,22 +163,42 @@ export const handler = async (event: any) => {
                 required: requiredFields,
             },
         }
-      });
-
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ text: response.text }),
-        headers: { 'Content-Type': 'application/json' }
       };
+
+      // Direct Fetch to Google API (Bypassing SDK to ensure Auth Key works via URL param)
+      // Note: "streamGenerateContent" endpoint sends a stream of JSON objects
+      const googleResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:streamGenerateContent?key=${apiKey}`, 
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        }
+      );
+
+      if (!googleResponse.ok) {
+          const err = await googleResponse.text();
+          throw new Error(`Gemini API Error: ${err}`);
+      }
+
+      // Pipe the Google Stream directly to the Client
+      // This prevents the Netlify function from buffering and timing out
+      if (!googleResponse.body) {
+        throw new Error("No response body from Google");
+      }
+
+      return new Response(googleResponse.body, {
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
-    return { statusCode: 400, body: "Invalid Action" };
+    return new Response("Invalid Action", { status: 400 });
 
   } catch (error: any) {
     console.error('Backend Error:', error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
-    };
+    return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+    });
   }
 };
