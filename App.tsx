@@ -140,7 +140,8 @@ const App: React.FC = () => {
       addLog(`Processing Mode: ${mode}`);
       const mimeType = combinedBlob.type || 'audio/webm';
         
-      const newData = await processMeetingAudio(combinedBlob, mimeType, mode);
+      // Pass addLog to the service so it renders in the UI
+      const newData = await processMeetingAudio(combinedBlob, mimeType, mode, addLog);
       addLog("Success! Response received.");
 
       let updatedData: MeetingData;
@@ -165,7 +166,7 @@ const App: React.FC = () => {
 
     } catch (apiError) {
       console.error(apiError);
-      addLog(`Error: ${apiError instanceof Error ? apiError.message : 'Unknown API error'}`);
+      // addLog(`Error: ${apiError instanceof Error ? apiError.message : 'Unknown API error'}`);
       setError("Failed to process audio. See logs.");
       setAppState(AppState.PAUSED); 
     } finally {
