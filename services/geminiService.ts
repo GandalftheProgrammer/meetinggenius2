@@ -1,4 +1,3 @@
-
 import { MeetingData, ProcessingMode } from '../types';
 
 export const processMeetingAudio = async (
@@ -81,7 +80,7 @@ export const processMeetingAudio = async (
     log(`File upload finalized. URI: ${fileUri}`);
 
     // 3. Start Background Job
-    log("Step 3: Starting Background Job...");
+    log("Step 3: [NEW] Queuing Background Job...");
     
     // Generate a unique ID for this job
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -93,24 +92,25 @@ export const processMeetingAudio = async (
         body: JSON.stringify({ fileUri, mimeType, mode, jobId })
     });
 
-    // Netlify Background functions return 202 Accepted immediately if queued successfully
+    // Netlify Background functions typically return 202 Accepted immediately
     if (startResp.status !== 202 && !startResp.ok) {
-        throw new Error(`Failed to start background job: ${await startResp.text()}`);
+        const errorText = await startResp.text();
+        throw new Error(`Failed to start background job: ${errorText}`);
     }
     
-    log(`Job started with ID: ${jobId}. Waiting for results...`);
+    log(`Job started with ID: ${jobId}. Waiting for results (this may take a minute)...`);
 
     // 4. Poll for Results
     let attempts = 0;
-    const MAX_ATTEMPTS = 120; // 120 * 3s = 6 minutes max wait
+    const MAX_ATTEMPTS = 200; // 200 * 3s = 10 minutes max wait
     
     while (attempts < MAX_ATTEMPTS) {
         attempts++;
         await new Promise(r => setTimeout(r, 3000)); // Wait 3 seconds
         
-        // Log a "heartbeat" to the UI every 15 seconds (every 5th attempt)
+        // Log a "heartbeat" to the UI periodically
         if (attempts % 5 === 0) {
-            log(`Checking status (Attempt ${attempts}/${MAX_ATTEMPTS})...`);
+            log(`Checking status (Attempt ${attempts})...`);
         }
 
         const pollResp = await fetch('/.netlify/functions/gemini', {

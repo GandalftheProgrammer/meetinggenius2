@@ -1,4 +1,3 @@
-
 import { getStore } from "@netlify/blobs";
 
 // This function handles Synchronous tasks:
@@ -103,7 +102,6 @@ export default async (req: Request) => {
         if (!jobId) return new Response("Missing jobId", { status: 400 });
 
         // Connect to Netlify Blobs
-        // Note: siteID and token are auto-injected in Netlify Runtime
         const store = getStore({ name: "meeting-results", consistency: "strong" });
         
         const data = await store.get(jobId, { type: "json" });
@@ -118,6 +116,11 @@ export default async (req: Request) => {
         return new Response(JSON.stringify(data), {
             headers: { 'Content-Type': 'application/json' }
         });
+    }
+
+    // Detect old client calls
+    if (action === 'generate' || action === 'generate_stream') {
+        return new Response(JSON.stringify({ error: "Client outdated. Please refresh page." }), { status: 400 });
     }
 
     return new Response("Invalid Action", { status: 400 });

@@ -1,4 +1,3 @@
-
 import { Type } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 
@@ -7,8 +6,8 @@ import { getStore } from "@netlify/blobs";
 // It receives the request, returns 202 immediately, then continues running.
 
 export default async (req: Request) => {
-  // If this is a preflight or non-POST, ignore (though background funcs are usually POST)
-  if (req.method !== 'POST') return;
+  // If this is a preflight or non-POST, ignore
+  if (req.method !== 'POST') return new Response("OK");
 
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
@@ -33,12 +32,12 @@ export default async (req: Request) => {
     // Initialize Store
     const store = getStore({ name: "meeting-results", consistency: "strong" });
 
-    // Mark as started (optional, but good for debugging if we wanted more detailed states)
-    // await store.set(jobId, JSON.stringify({ status: 'STARTED' }));
+    // Mark as started
+    await store.setJSON(jobId, { status: 'PROCESSING' });
 
     const MODEL_NAME = "gemini-1.5-pro-latest"; // Using 1.5 Pro for best mix of stability and context
 
-    // --- CONSTRUCT PROMPT (Same as before) ---
+    // --- CONSTRUCT PROMPT ---
       let systemInstruction = `
         You are an expert professional meeting secretary. 
         Listen to the attached audio recording of a meeting.
@@ -102,7 +101,7 @@ export default async (req: Request) => {
         }
       };
 
-    // --- CALL GOOGLE (Standard, no streaming needed here) ---
+    // --- CALL GOOGLE ---
     console.log(`[Background] Calling Gemini for ${jobId}...`);
     
     const googleResponse = await fetch(
