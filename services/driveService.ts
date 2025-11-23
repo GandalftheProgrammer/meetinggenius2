@@ -49,9 +49,6 @@ export const connectToDrive = () => {
     console.error("Drive client not initialized");
     return;
   }
-  // Force the user to select an account to avoid confusion about which Drive is connected
-  // 'consent' ensures the user approves permissions again (useful for testing)
-  // 'select_account' forces the account chooser
   tokenClient.requestAccessToken({ prompt: 'consent select_account' });
 };
 
@@ -64,16 +61,18 @@ export const disconnectDrive = () => {
   }
 };
 
-// Helper to get or create a folder ID based on name
-const getFolderId = async (folderName: string): Promise<string | null> => {
+// --- FOLDER LOGIC ---
+
+const getFolderId = async (folderName: string, parentId?: string): Promise<string | null> => {
   if (!accessToken) return null;
 
-  const query = `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}`;
+  let query = `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
+  if (parentId) {
+    query += ` and '${parentId}' in parents`;
+  }
 
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   
   const data = await response.json();
   if (data.files && data.files.length > 0) {
@@ -82,11 +81,14 @@ const getFolderId = async (folderName: string): Promise<string | null> => {
   return null;
 };
 
-const createFolder = async (folderName: string): Promise<string> => {
-  const metadata = {
+const createFolder = async (folderName: string, parentId?: string): Promise<string> => {
+  const metadata: any = {
     name: folderName,
     mimeType: 'application/vnd.google-apps.folder',
   };
+  if (parentId) {
+    metadata.parents = [parentId];
+  }
 
   const response = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
@@ -100,33 +102,44 @@ const createFolder = async (folderName: string): Promise<string> => {
   return data.id;
 };
 
-// Upload function that retrieves the preferred folder name from storage if not passed
-export const uploadToDrive = async (filename: string, content: string): Promise<{id: string, webViewLink?: string}> => {
+// Ensures the structure: MainFolder -> SubFolder exists
+const ensureFolderHierarchy = async (subFolder: string): Promise<string> => {
+    // 1. Get Main Folder
+    const mainFolderName = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
+    let mainId = await getFolderId(mainFolderName);
+    if (!mainId) {
+        mainId = await createFolder(mainFolderName);
+    }
+
+    // 2. Get/Create Sub Folder
+    let subId = await getFolderId(subFolder, mainId);
+    if (!subId) {
+        subId = await createFolder(subFolder, mainId);
+    }
+    
+    return subId;
+};
+
+// --- UPLOAD LOGIC ---
+
+// Generic upload function for both Blob (Audio) and String (Text)
+const uploadFileToDrive = async (filename: string, content: Blob | string, mimeType: string, folderName: string): Promise<{id: string, webViewLink?: string}> => {
   if (!accessToken) throw new Error("Not authenticated");
 
-  // Retrieve folder preference, default to 'MeetingGenius'
-  const folderName = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
+  const folderId = await ensureFolderHierarchy(folderName);
 
-  // 1. Find or Create Folder
-  let folderId = await getFolderId(folderName);
-  if (!folderId) {
-    folderId = await createFolder(folderName);
-  }
-
-  // 2. Upload File
   const metadata = {
     name: filename,
     parents: [folderId],
-    mimeType: 'text/markdown',
+    mimeType: mimeType, // MIME type for the file itself (e.g. 'audio/webm' or 'text/markdown')
   };
 
-  const fileContent = new Blob([content], { type: 'text/markdown' });
+  const fileContent = typeof content === 'string' ? new Blob([content], { type: mimeType }) : content;
   
   const form = new FormData();
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', fileContent);
 
-  // Request 'webViewLink' field to allow opening the file later
   const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -136,4 +149,17 @@ export const uploadToDrive = async (filename: string, content: string): Promise<
   if (!response.ok) throw new Error("Upload failed");
   const data = await response.json();
   return { id: data.id, webViewLink: data.webViewLink };
+};
+
+// Wrapper for Audio
+export const uploadAudioToDrive = async (filename: string, audioBlob: Blob): Promise<{id: string, webViewLink?: string}> => {
+    // Determine extension based on blob type if possible, otherwise default to .webm
+    const ext = audioBlob.type.includes('mp4') ? '.mp4' : '.webm';
+    const finalName = filename.endsWith(ext) ? filename : `${filename}${ext}`;
+    return uploadFileToDrive(finalName, audioBlob, audioBlob.type, 'Audio');
+};
+
+// Wrapper for Text (Notes/Transcripts)
+export const uploadTextToDrive = async (filename: string, content: string, subFolder: 'Notes' | 'Transcripts'): Promise<{id: string, webViewLink?: string}> => {
+    return uploadFileToDrive(filename, content, 'text/markdown', subFolder);
 };

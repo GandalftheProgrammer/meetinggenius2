@@ -5,7 +5,7 @@ import Recorder from './components/Recorder';
 import Results from './components/Results';
 import { AppState, MeetingData, ProcessingMode } from './types';
 import { processMeetingAudio } from './services/geminiService';
-import { initDrive, connectToDrive, uploadToDrive, disconnectDrive } from './services/driveService';
+import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disconnectDrive } from './services/driveService';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
@@ -46,7 +46,7 @@ const App: React.FC = () => {
   // Handle user clicking "Connect Drive"
   const handleConnectDrive = () => {
       // Prompt for folder name to satisfy user request to choose location
-      const folderName = prompt("Choose a Google Drive folder name to save your notes:", localStorage.getItem('drive_folder_name') || "MeetingGenius");
+      const folderName = prompt("Choose a Google Drive folder name for your meeting data (Main Folder):", localStorage.getItem('drive_folder_name') || "MeetingGenius");
       
       if (folderName) {
           localStorage.setItem('drive_folder_name', folderName);
@@ -92,31 +92,45 @@ const App: React.FC = () => {
     }
   };
 
-  // Helper to save to Drive
-  const saveToDrive = async (data: MeetingData, currentTitle: string) => {
+  // Helper to save Audio to Drive (Safety Backup)
+  const saveAudioBackup = async (blob: Blob, currentTitle: string) => {
+    if (!isDriveConnected) return;
+    const safeTitle = currentTitle.replace(/[^a-z0-9]/gi, '_');
+    try {
+        addLog("Backing up audio to Drive (/Audio)...");
+        const result = await uploadAudioToDrive(safeTitle, blob);
+        if (result.webViewLink) addLog(`Audio backed up: ${result.webViewLink}`);
+    } catch (err) {
+        console.error("Audio backup error", err);
+        addLog("Warning: Audio backup to Drive failed.");
+    }
+  };
+
+  // Helper to save Notes/Transcript to Drive
+  const saveResultsToDrive = async (data: MeetingData, currentTitle: string) => {
     if (!isDriveConnected) return;
     
     const safeTitle = currentTitle.replace(/[^a-z0-9]/gi, '_');
     
     try {
-        addLog("Saving to Google Drive...");
+        addLog("Saving results to Google Drive...");
         
         // Upload Notes if they exist
         if (data.summary) {
             const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Decisions\n${data.decisions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
-            const result = await uploadToDrive(`${safeTitle}_notes.md`, notesContent);
+            const result = await uploadTextToDrive(`${safeTitle}_notes.md`, notesContent, 'Notes');
             if (result.webViewLink) addLog(`Notes saved: ${result.webViewLink}`);
         }
 
         // Upload Transcript if it exists
         if (data.transcription) {
             const transcriptContent = `# Transcription: ${currentTitle}\n\n${data.transcription}`;
-            const result = await uploadToDrive(`${safeTitle}_transcript.md`, transcriptContent);
+            const result = await uploadTextToDrive(`${safeTitle}_transcript.md`, transcriptContent, 'Transcripts');
             if (result.webViewLink) addLog(`Transcript saved: ${result.webViewLink}`);
         }
     } catch (err) {
         console.error("Drive upload error", err);
-        addLog("Failed to save to Drive. Check connection.");
+        addLog("Failed to save results to Drive.");
     }
   };
 
@@ -134,13 +148,14 @@ const App: React.FC = () => {
       setIsGeneratingMissing(true);
     } else {
       setAppState(AppState.PROCESSING);
+      // Trigger Audio Backup immediately when processing starts (Fire & Forget)
+      saveAudioBackup(combinedBlob, currentTitle);
     }
     
     try {
       addLog(`Processing Mode: ${mode}`);
       const mimeType = combinedBlob.type || 'audio/webm';
         
-      // CRITICAL FIX: Passing addLog as the 4th argument
       const newData = await processMeetingAudio(combinedBlob, mimeType, mode, addLog);
       addLog("Success! Response received.");
 
@@ -161,8 +176,8 @@ const App: React.FC = () => {
       setMeetingData(updatedData);
       setAppState(AppState.COMPLETED);
 
-      // AUTO SAVE TO DRIVE
-      await saveToDrive(updatedData, currentTitle);
+      // AUTO SAVE RESULTS TO DRIVE
+      await saveResultsToDrive(updatedData, currentTitle);
 
     } catch (apiError) {
       console.error(apiError);

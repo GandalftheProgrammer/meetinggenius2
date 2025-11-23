@@ -51,6 +51,13 @@ export default async (req: Request) => {
         1. Detect the dominant language spoken in the audio.
         2. You MUST write the "summary", "decisions", and "actionItems" in that EXACT SAME LANGUAGE.
         
+        CRITICAL INSTRUCTION - ACCURACY & HALLUCINATIONS:
+        1. **NO INVENTIONS:** You must NOT invent topics, decisions, or action items that were not explicitly spoken about. If a topic was not discussed, do not include it.
+        2. **PROPOSALS VS DECISIONS:** 
+           - If a point was proposed/suggested but not explicitly confirmed or agreed upon, you MUST still record it so it is not forgotten, BUT you must phrase it clearly as a "Suggestion" or "Proposal" (e.g., "Proposed: X", "Suggested: Y"). 
+           - Only list items as "Decisions" if there was a clear agreement or consensus.
+        3. **LITERALNESS:** Stay close to the speakers' actual phrasing. Do not over-interpret vague statements into concrete tasks. If the speaker says "we might look into X", do not write "Action Item: Look into X". Write "Action Item: Evaluate if we should look into X".
+        
         FALLBACK JSON (Only if silence):
         {
             "transcription": "[No intelligible speech detected]",
@@ -63,8 +70,8 @@ export default async (req: Request) => {
       let taskInstruction = "";
       const transcriptionSchema = { type: Type.STRING, description: "Full verbatim transcription" };
       const summarySchema = { type: Type.STRING, description: "A concise summary" };
-      const decisionsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Key decisions" };
-      const actionItemsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Action items" };
+      const decisionsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Key decisions and agreed points" };
+      const actionItemsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Action items and suggestions to follow up on" };
 
       let schemaProperties: any = {};
       let requiredFields: string[] = [];
