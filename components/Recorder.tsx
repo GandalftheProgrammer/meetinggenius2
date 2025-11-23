@@ -101,19 +101,22 @@ const Recorder: React.FC<RecorderProps> = ({
 
   const startRecording = async () => {
     try {
-      // 1. Start the Silent Loop Hack (Must happen on user gesture)
+      // 1. Attempt Silent Loop Hack (Fail-safe)
+      // We wrap this in a separate try/catch so it doesn't block the main microphone access if it fails.
       if (silentAudioRef.current) {
-          await silentAudioRef.current.play();
-          
-          // 2. Update Media Session Metadata so OS sees it as "Now Playing"
-          if ('mediaSession' in navigator) {
-              navigator.mediaSession.metadata = new MediaMetadata({
-                  title: 'Meeting Recording in Progress',
-                  artist: 'MeetingGenius',
-                  album: 'Do not close'
-              });
-              navigator.mediaSession.playbackState = 'playing';
-          }
+          silentAudioRef.current.play().then(() => {
+             // 2. Update Media Session Metadata only if play succeeds
+             if ('mediaSession' in navigator) {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: 'Meeting Recording',
+                    artist: 'MeetingGenius',
+                    album: 'Background Active'
+                });
+                navigator.mediaSession.playbackState = 'playing';
+            }
+          }).catch(err => {
+              console.warn("Silent audio hack failed (ignoring, proceeding with recording):", err);
+          });
       }
 
       let finalStream: MediaStream;
@@ -164,6 +167,7 @@ const Recorder: React.FC<RecorderProps> = ({
           return; 
         }
       } else {
+        // Standard Microphone Request
         finalStream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
             echoCancellation: false,
@@ -204,6 +208,7 @@ const Recorder: React.FC<RecorderProps> = ({
     } catch (error) {
       console.error("Error accessing audio:", error);
       alert("Could not access audio device. Please check permissions.");
+      // Ensure silent audio stops if mic fails
       if (silentAudioRef.current) silentAudioRef.current.pause();
     }
   };
