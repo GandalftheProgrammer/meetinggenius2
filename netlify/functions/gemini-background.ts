@@ -6,6 +6,40 @@ import { getStore } from "@netlify/blobs";
 // This function runs for up to 15 minutes.
 // It receives the request, returns 202 immediately, then continues running.
 
+const waitForFileActive = async (fileUri: string, apiKey: string) => {
+    console.log(`[Background] Checking state for ${fileUri}...`);
+    let attempts = 0;
+    const maxAttempts = 60; // 5 minutes max (60 * 5s)
+
+    while (attempts < maxAttempts) {
+        try {
+            const response = await fetch(`${fileUri}?key=${apiKey}`);
+            if (!response.ok) throw new Error(`Failed to fetch file status: ${response.statusText}`);
+            
+            const data = await response.json();
+            
+            if (data.state === "ACTIVE") {
+                console.log(`[Background] File ${fileUri} is ACTIVE.`);
+                return;
+            }
+            
+            if (data.state === "FAILED") {
+                throw new Error("File processing failed on Google side.");
+            }
+
+            console.log(`[Background] File state is ${data.state}, waiting 5s...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            attempts++;
+        } catch (e) {
+            console.warn(`[Background] Error checking file state: ${e}`);
+            // Wait and retry even on network error, unless max attempts reached
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            attempts++;
+        }
+    }
+    throw new Error("Timeout waiting for file to become ACTIVE.");
+};
+
 export default async (req: Request) => {
   // If this is a preflight or non-POST, ignore
   if (req.method !== 'POST') return new Response("OK");
@@ -38,6 +72,15 @@ export default async (req: Request) => {
 
     // Mark as started
     await store.setJSON(jobId, { status: 'PROCESSING' });
+
+    // --- WAIT FOR FILE PROCESSING ---
+    try {
+        await waitForFileActive(fileUri, apiKey);
+    } catch (fileError: any) {
+        console.error(`[Background] File Error: ${fileError.message}`);
+        await store.setJSON(jobId, { status: 'ERROR', error: `File Processing Error: ${fileError.message}` });
+        return;
+    }
 
     // --- CONSTRUCT PROMPT ---
       let systemInstruction = `

@@ -41,10 +41,11 @@ const Header: React.FC<HeaderProps> = ({
                         style={{ backgroundImage: 'none' }}
                     >
                         <option value="gemini-3-pro-preview">Gemini 3 Pro (Preview)</option>
+                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                        <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
                         <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                        <option value="gemini-2.0-flash-lite-preview-02-05">Gemini 2.0 Flash Lite</option>
                         <option value="gemini-1.5-pro">Gemini 1.5 Pro (Stable)</option>
-                        <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
                     </select>
                     <ChevronDown className="w-3 h-3 absolute right-3 pointer-events-none text-slate-400" />
                 </div>
