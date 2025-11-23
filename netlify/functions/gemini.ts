@@ -1,6 +1,6 @@
 import { Type } from "@google/genai";
 
-// We use the Web Standard API (Request/Response) to support streaming the heartbeat
+// We use the Web Standard API (Request/Response) to support streaming
 export default async (req: Request) => {
   // 1. CORS Preflight
   if (req.method === "OPTIONS") {
@@ -97,7 +97,7 @@ export default async (req: Request) => {
       });
     }
 
-    // --- ACTION 3: GENERATE CONTENT (Standard Call with Heartbeat) ---
+    // --- ACTION 3: GENERATE CONTENT (Streaming with Heartbeat) ---
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
@@ -164,29 +164,29 @@ export default async (req: Request) => {
         }
       };
 
-      // We use a ReadableStream to allow sending Heartbeats while waiting for the Standard API
+      // Create a Custom Stream that mixes Heartbeat signals with the Gemini API response
       const mixedStream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
-          let hasFinished = false;
+          let hasReceivedData = false;
 
           // 1. Start the Heartbeat (Keep-Alive)
-          // Send a safe HTML comment every 2.5 seconds to prevent Netlify Timeout
+          // Send a safe HTML comment every 2.5 seconds to keep Netlify connection open
           const heartbeatInterval = setInterval(() => {
-            if (!hasFinished) {
+            if (!hasReceivedData) {
               try {
                 controller.enqueue(encoder.encode("<!-- KEEP_ALIVE_PING -->\n"));
               } catch (e) {
+                // Controller might be closed if client disconnected
                 clearInterval(heartbeatInterval);
               }
             }
           }, 2500);
 
           try {
-            // 2. Call Google API (STANDARD generateContent, NOT stream)
-            // This awaits until the FULL response is ready
+            // 2. Call Google API
             const googleResponse = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`, 
+              `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:streamGenerateContent?key=${apiKey}`, 
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -194,26 +194,40 @@ export default async (req: Request) => {
               }
             );
 
-            // Stop heartbeat as soon as we get a response (success or fail)
-            hasFinished = true;
-            clearInterval(heartbeatInterval);
-
             if (!googleResponse.ok) {
+              clearInterval(heartbeatInterval);
               const err = await googleResponse.text();
               controller.enqueue(encoder.encode(JSON.stringify({ error: `Google API Error: ${err}` })));
               controller.close();
               return;
             }
 
-            // 3. Send the full JSON response to the client
-            const fullJsonResponse = await googleResponse.text();
-            controller.enqueue(encoder.encode(fullJsonResponse));
+            if (!googleResponse.body) {
+              clearInterval(heartbeatInterval);
+              controller.enqueue(encoder.encode(JSON.stringify({ error: "No response body" })));
+              controller.close();
+              return;
+            }
+
+            // 3. Pipe Google Response to Client
+            const reader = googleResponse.body.getReader();
+            
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              // Once we have real data, we mark it so heartbeat stops sending
+              hasReceivedData = true;
+              clearInterval(heartbeatInterval);
+              
+              controller.enqueue(value);
+            }
+            
             controller.close();
 
           } catch (error: any) {
-            hasFinished = true;
             clearInterval(heartbeatInterval);
-            const errJson = JSON.stringify({ error: error.message || "Unknown backend error" });
+            const errJson = JSON.stringify({ error: error.message || "Unknown stream error" });
             controller.enqueue(encoder.encode(errJson));
             controller.close();
           }

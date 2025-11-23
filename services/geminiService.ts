@@ -80,8 +80,8 @@ export const processMeetingAudio = async (
     if (!fileUri) throw new Error("File URI missing after upload.");
     log(`File upload finalized. URI: ${fileUri}`);
 
-    // 3. Generate (Standard Call with Heartbeat)
-    log("Step 3: Sending generation request (Standard API)...");
+    // 3. Generate (Streaming with Keep-Alive)
+    log("Step 3: Sending generation request...");
     
     const genResponse = await fetch('/.netlify/functions/gemini', {
         method: 'POST',
@@ -97,7 +97,7 @@ export const processMeetingAudio = async (
         throw new Error(`Backend Error: ${errorText}`);
     }
 
-    // STREAM READER LOGIC (To consume Heartbeats + Final JSON)
+    // STREAM READER LOGIC
     const reader = genResponse.body?.getReader();
     if (!reader) throw new Error("Response body is not a stream");
 
@@ -105,7 +105,7 @@ export const processMeetingAudio = async (
     let rawAccumulatedText = '';
     let hasReceivedHeartbeat = false;
     
-    log("Step 4: Waiting for Gemini (Standard API processing)...");
+    log("Step 4: Waiting for Gemini (this can take up to a minute)...");
 
     while (true) {
         const { done, value } = await reader.read();
@@ -139,40 +139,28 @@ export const processMeetingAudio = async (
     
     try {
         // Try strict JSON parse first
-        const parsedResponse = JSON.parse(cleanJsonText);
+        const responseArray = JSON.parse(cleanJsonText);
         
-        // Handle Standard API Response (Single Object)
-        if (!Array.isArray(parsedResponse)) {
-            log("Format: Valid JSON Object detected (Standard API).");
-            
-            if (parsedResponse.error) {
-                throw new Error(`Gemini API Error: ${JSON.stringify(parsedResponse.error)}`);
-            }
-
-            if (parsedResponse.candidates && 
-                parsedResponse.candidates[0] && 
-                parsedResponse.candidates[0].content && 
-                parsedResponse.candidates[0].content.parts) {
-                
-                parsedResponse.candidates[0].content.parts.forEach((part: any) => {
-                    if (part.text) fullText += part.text;
-                });
-            }
-        } else {
-            // Handle Legacy/Streamed Array Response (Just in case)
-            log("Format: JSON Array detected.");
-            parsedResponse.forEach((item: any) => {
+        if (Array.isArray(responseArray)) {
+            log("Format: Valid JSON Array detected.");
+            responseArray.forEach((item: any) => {
                 if (item.candidates && item.candidates[0] && item.candidates[0].content && item.candidates[0].content.parts) {
                     item.candidates[0].content.parts.forEach((part: any) => {
                         if (part.text) fullText += part.text;
                     });
                 }
             });
+        } else {
+            // It might be a single object error
+            log("Format: Not an array. Checking for single object...");
+            if (responseArray.error) {
+                throw new Error(`Gemini API Error: ${JSON.stringify(responseArray.error)}`);
+            }
         }
     } catch (e: any) {
         log(`JSON PARSE FAILED: ${e.message}`);
         log("--- RAW RESPONSE START (First 500 chars) ---");
-        log(cleanJsonText.substring(0, 500)); 
+        log(cleanJsonText.substring(0, 500)); // Log the CLEAN text
         log("--- RAW RESPONSE END ---");
         
         if (cleanJsonText.trim().startsWith("<!DOCTYPE html>")) {
