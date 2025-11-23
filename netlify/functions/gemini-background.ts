@@ -35,7 +35,8 @@ export default async (req: Request) => {
     // Mark as started
     await store.setJSON(jobId, { status: 'PROCESSING' });
 
-    const MODEL_NAME = "gemini-1.5-pro-latest"; // Using 1.5 Pro for best mix of stability and context
+    // FIXED: Using the specific model requested by user
+    const MODEL_NAME = "gemini-3-pro-preview"; 
 
     // --- CONSTRUCT PROMPT ---
       let systemInstruction = `
@@ -102,7 +103,7 @@ export default async (req: Request) => {
       };
 
     // --- CALL GOOGLE ---
-    console.log(`[Background] Calling Gemini for ${jobId}...`);
+    console.log(`[Background] Calling Gemini (${MODEL_NAME}) for ${jobId}...`);
     
     const googleResponse = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`, 
