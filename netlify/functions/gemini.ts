@@ -2,17 +2,37 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Buffer } from "buffer";
 
 const apiKey = process.env.API_KEY;
-if (!apiKey) throw new Error("API_KEY is missing in Netlify Env Vars");
 
-const ai = new GoogleGenAI({ apiKey });
+// Helper to extract a clean message from various error formats
+const getErrorMessage = (error: any): string => {
+  if (!error) return "Unknown error occurred";
+
+  if (typeof error === 'string') {
+    try {
+      const parsed = JSON.parse(error);
+      return getErrorMessage(parsed);
+    } catch {
+      return error;
+    }
+  }
+  
+  if (error.error) {
+    if (typeof error.error === 'object') {
+        return error.error.message || error.error.status || "Google API Error";
+    }
+    return error.error;
+  }
+  
+  if (error.message) return error.message;
+  
+  return JSON.stringify(error);
+};
+
+const ai = new GoogleGenAI({ apiKey: apiKey || "" });
 const MODEL_NAME = "gemini-3-pro-preview";
 
-/**
- * Netlify Function using Web Standard API (Request/Response)
- * This is required to support Streaming responses.
- */
 export default async (req: Request) => {
-  // CORS Preflight handling (if needed, though usually handled by Netlify config)
+  // CORS Preflight
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
@@ -28,6 +48,11 @@ export default async (req: Request) => {
   }
 
   try {
+    if (!apiKey) {
+      console.error("Missing API_KEY in Netlify Environment Variables");
+      throw new Error("Server Configuration Error: API_KEY is missing in Netlify Site Settings.");
+    }
+
     const payload = await req.json();
     const { action } = payload;
 
@@ -53,8 +78,7 @@ export default async (req: Request) => {
 
       if (!initResponse.ok) {
          const errText = await initResponse.text();
-         console.error("Google Upload Init Failed", initResponse.status, errText);
-         throw new Error(`Google Handshake Failed (${initResponse.status}): ${errText}`);
+         throw new Error(`Google Upload Handshake Failed: ${getErrorMessage(errText)}`);
       }
 
       const uploadUrl = initResponse.headers.get('x-goog-upload-url');
@@ -68,10 +92,8 @@ export default async (req: Request) => {
     if (action === 'upload_chunk') {
       const { uploadUrl, chunkData, offset, totalSize, isLastChunk } = payload;
       
-      // Buffer is available in Node.js environment
       const buffer = Buffer.from(chunkData, 'base64');
       const chunkLength = buffer.length;
-      
       const command = isLastChunk ? 'upload, finalize' : 'upload';
       
       const putResponse = await fetch(uploadUrl, {
@@ -86,7 +108,7 @@ export default async (req: Request) => {
 
       if (!putResponse.ok) {
          const errText = await putResponse.text();
-         throw new Error(`Google Chunk Upload Failed: ${errText}`);
+         throw new Error(`Google Chunk Upload Failed: ${getErrorMessage(errText)}`);
       }
 
       let body = {};
@@ -99,7 +121,7 @@ export default async (req: Request) => {
       });
     }
 
-    // --- ACTION 3: GENERATE CONTENT (STREAMING) ---
+    // --- ACTION 3: GENERATE CONTENT (STREAMING WITH HEARTBEAT) ---
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
@@ -147,40 +169,54 @@ export default async (req: Request) => {
         requiredFields = ["transcription", "summary", "decisions", "actionItems"];
       }
 
-      // Use generateContentStream instead of generateContent
-      const result = await ai.models.generateContentStream({
-        model: MODEL_NAME,
-        contents: {
-          parts: [
-             { fileData: { fileUri: fileUri, mimeType: mimeType } },
-             { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
-          ]
-        },
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: schemaProperties,
-                required: requiredFields,
-            },
-        }
-      });
-
-      // Create a ReadableStream to pipe chunks to the client
+      // Create stream immediately to send headers to client fast
       const stream = new ReadableStream({
         async start(controller) {
             const encoder = new TextEncoder();
+            
+            // HEARTBEAT: Send a space every 5 seconds to keep the Load Balancer happy
+            // while Gemini is "thinking". Client JSON parser will ignore these spaces.
+            const heartbeatInterval = setInterval(() => {
+                try {
+                    controller.enqueue(encoder.encode(" "));
+                } catch (e) {
+                    clearInterval(heartbeatInterval);
+                }
+            }, 5000);
+
             try {
+                // Perform the actual API call INSIDE the stream start
+                const result = await ai.models.generateContentStream({
+                    model: MODEL_NAME,
+                    contents: {
+                        parts: [
+                            { fileData: { fileUri: fileUri, mimeType: mimeType } },
+                            { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
+                        ]
+                    },
+                    config: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: Type.OBJECT,
+                            properties: schemaProperties,
+                            required: requiredFields,
+                        },
+                    }
+                });
+
                 for await (const chunk of result) {
                     const text = chunk.text;
                     if (text) {
                         controller.enqueue(encoder.encode(text));
                     }
                 }
-                controller.close();
-            } catch (err) {
+            } catch (err: any) {
                 console.error("Streaming error:", err);
-                controller.error(err);
+                // We cannot change headers now, but the stream will close.
+                // The client will see a malformed JSON error.
+            } finally {
+                clearInterval(heartbeatInterval);
+                controller.close();
             }
         }
       });
@@ -197,8 +233,9 @@ export default async (req: Request) => {
 
   } catch (error: any) {
     console.error('Backend Error:', error);
-    return new Response(JSON.stringify({ error: error.message }), { 
-        status: 500,
+    const cleanMessage = getErrorMessage(error);
+    return new Response(JSON.stringify({ error: cleanMessage }), { 
+        status: error.status || 500,
         headers: { 'Content-Type': 'application/json' }
     });
   }
