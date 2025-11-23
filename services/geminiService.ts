@@ -12,7 +12,7 @@ export const processMeetingAudio = async (
   };
 
   try {
-    log(`Starting SaaS Flow (Chunked Proxy). Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    log(`Starting SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
 
     // 1. Handshake
     log("Step 1: Requesting Upload URL...");
@@ -88,7 +88,13 @@ export const processMeetingAudio = async (
         body: JSON.stringify({ action: 'generate', fileUri, mimeType, mode })
     });
     
-    if (!genResponse.ok) throw new Error(await genResponse.text());
+    log(`Step 3: Response Status: ${genResponse.status} ${genResponse.statusText}`);
+
+    if (!genResponse.ok) {
+        const errorText = await genResponse.text();
+        log(`CRITICAL API ERROR: ${errorText.substring(0, 200)}...`);
+        throw new Error(`Backend Error: ${errorText}`);
+    }
 
     // STREAM READER LOGIC for Raw REST API
     const reader = genResponse.body?.getReader();
@@ -96,29 +102,35 @@ export const processMeetingAudio = async (
 
     const decoder = new TextDecoder();
     let rawAccumulatedText = '';
+    let chunkCount = 0;
     
+    log("Step 4: Reading Stream...");
+
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        
+        chunkCount++;
         const chunk = decoder.decode(value, { stream: true });
         rawAccumulatedText += chunk;
-        // Since we are piping the raw REST response, it comes as a JSON array of objects: [{...}, {...}]
-        // We accumulate the full text and parse at the end for simplicity, 
-        // BUT the act of reading the stream keeps the connection alive, preventing timeout.
+        
+        // Log every few chunks to show progress without spamming
+        if (chunkCount % 5 === 0) {
+            log(`Received chunk #${chunkCount} (Total bytes: ${rawAccumulatedText.length})`);
+        }
     }
 
-    log("Generation complete. Parsing Streamed Data...");
-    
-    // The raw stream is a JSON array: [ {candidates: ...}, {candidates: ...} ]
-    // We need to parse this array and concatenate the text parts.
-    // However, sometimes it comes as multiple JSON objects concatenated or a proper array.
-    // The Google REST API returns an array `[...]`.
+    log(`Stream complete. Total Length: ${rawAccumulatedText.length}`);
+    log("Step 5: Parsing Response...");
     
     let fullText = "";
     
     try {
+        // Try strict JSON parse first
         const responseArray = JSON.parse(rawAccumulatedText);
+        
         if (Array.isArray(responseArray)) {
+            log("Format: Valid JSON Array detected.");
             responseArray.forEach((item: any) => {
                 if (item.candidates && item.candidates[0] && item.candidates[0].content && item.candidates[0].content.parts) {
                     item.candidates[0].content.parts.forEach((part: any) => {
@@ -126,11 +138,32 @@ export const processMeetingAudio = async (
                     });
                 }
             });
+        } else {
+            // It might be a single object error
+            log("Format: Not an array. Checking for single object...");
+            if (responseArray.error) {
+                throw new Error(`Gemini API Error: ${JSON.stringify(responseArray.error)}`);
+            }
         }
-    } catch (e) {
-        // Fallback: If JSON is malformed (e.g. error in stream), try to extract what we can
-        console.warn("Could not parse full JSON array, attempting raw text extraction", e);
+    } catch (e: any) {
+        log(`JSON PARSE FAILED: ${e.message}`);
+        log("--- RAW RESPONSE START (First 500 chars) ---");
+        log(rawAccumulatedText.substring(0, 500));
+        log("--- RAW RESPONSE END ---");
+        
+        // Fallback: It might be malformed JSON (e.g. ][ instead of ],[ ). 
+        // Or it might be an HTML error page from Netlify timeout.
+        if (rawAccumulatedText.trim().startsWith("<!DOCTYPE html>")) {
+             throw new Error("Received HTML (likely a Server Timeout or 502 Bad Gateway) instead of JSON.");
+        }
+
+        // Attempt to just treat it as text if it's not JSON
+        log("Attempting to use raw text as fallback...");
         fullText = rawAccumulatedText; 
+    }
+
+    if (!fullText) {
+        throw new Error("Parsed result is empty. The model returned no text.");
     }
 
     return parseResponse(fullText, mode);
@@ -158,7 +191,17 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     try {
         // Clean markdown code blocks if present
         const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const rawData = JSON.parse(cleanText);
+        // Find the first '{' and last '}'
+        const firstBrace = cleanText.indexOf('{');
+        const lastBrace = cleanText.lastIndexOf('}');
+        
+        if (firstBrace === -1 || lastBrace === -1) {
+             throw new Error("No JSON object found in text");
+        }
+        
+        const jsonOnly = cleanText.substring(firstBrace, lastBrace + 1);
+        const rawData = JSON.parse(jsonOnly);
+        
         return {
             transcription: rawData.transcription || "",
             summary: rawData.summary || "",
@@ -166,11 +209,11 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
             actionItems: rawData.actionItems || [],
         };
     } catch (e) {
-        console.error("Failed to parse JSON from AI", jsonText);
-        // Try to salvage partial data if possible, otherwise return error state
+        console.error("Failed to parse inner JSON structure", e);
+        // Return a partial success so the user sees *something*
         return {
-            transcription: "Error parsing response. The model generated invalid JSON.",
-            summary: "Error parsing response",
+            transcription: jsonText, // Put the raw text in transcription so they don't lose data
+            summary: "Error parsing structured notes. See Transcription tab for raw output.",
             decisions: [],
             actionItems: []
         };

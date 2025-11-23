@@ -97,7 +97,6 @@ export default async (req: Request) => {
     }
 
     // --- ACTION 3: GENERATE CONTENT (Manual Streaming Fetch) ---
-    // We utilize manual fetch instead of the SDK to prevent 401 errors in the serverless environment
     if (action === 'generate') {
       const { fileUri, mimeType, mode } = payload;
 
@@ -145,7 +144,6 @@ export default async (req: Request) => {
         requiredFields = ["transcription", "summary", "decisions", "actionItems"];
       }
 
-      // Construct the raw JSON payload for the REST API
       const requestBody = {
         contents: [
            { 
@@ -165,8 +163,7 @@ export default async (req: Request) => {
         }
       };
 
-      // Direct Fetch to Google API (Bypassing SDK to ensure Auth Key works via URL param)
-      // Note: "streamGenerateContent" endpoint sends a stream of JSON objects
+      // Direct Fetch to Google API
       const googleResponse = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:streamGenerateContent?key=${apiKey}`, 
         {
@@ -178,13 +175,15 @@ export default async (req: Request) => {
 
       if (!googleResponse.ok) {
           const err = await googleResponse.text();
-          throw new Error(`Gemini API Error: ${err}`);
+          console.error("Google API Error:", err);
+          return new Response(JSON.stringify({ error: `Google API Error: ${err}` }), { 
+              status: googleResponse.status,
+              headers: { 'Content-Type': 'application/json' }
+          });
       }
 
-      // Pipe the Google Stream directly to the Client
-      // This prevents the Netlify function from buffering and timing out
       if (!googleResponse.body) {
-        throw new Error("No response body from Google");
+        return new Response(JSON.stringify({ error: "No response body from Google" }), { status: 500 });
       }
 
       return new Response(googleResponse.body, {
