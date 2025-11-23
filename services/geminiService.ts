@@ -13,7 +13,7 @@ export const processMeetingAudio = async (
   };
 
   try {
-    log(`Starting SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
 
     // 1. Handshake
     log("Step 1: Requesting Upload URL...");
@@ -80,103 +80,64 @@ export const processMeetingAudio = async (
     if (!fileUri) throw new Error("File URI missing after upload.");
     log(`File upload finalized. URI: ${fileUri}`);
 
-    // 3. Generate (Streaming with Keep-Alive)
-    log("Step 3: Sending generation request...");
+    // 3. Start Background Job
+    log("Step 3: Starting Background Job...");
     
-    const genResponse = await fetch('/.netlify/functions/gemini', {
+    // Generate a unique ID for this job
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+    // Note: We call the background function endpoint
+    const startResp = await fetch('/.netlify/functions/gemini-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'generate', fileUri, mimeType, mode })
+        body: JSON.stringify({ fileUri, mimeType, mode, jobId })
     });
-    
-    log(`Step 3: Connection Established. Status: ${genResponse.status}`);
 
-    if (!genResponse.ok) {
-        const errorText = await genResponse.text();
-        log(`CRITICAL API ERROR: ${errorText.substring(0, 200)}...`);
-        throw new Error(`Backend Error: ${errorText}`);
+    // Netlify Background functions return 202 Accepted immediately if queued successfully
+    if (startResp.status !== 202 && !startResp.ok) {
+        throw new Error(`Failed to start background job: ${await startResp.text()}`);
     }
-
-    // STREAM READER LOGIC
-    const reader = genResponse.body?.getReader();
-    if (!reader) throw new Error("Response body is not a stream");
-
-    const decoder = new TextDecoder();
-    let rawAccumulatedText = '';
-    let hasReceivedHeartbeat = false;
     
-    log("Step 4: Waiting for Gemini (this can take up to a minute)...");
+    log(`Job started with ID: ${jobId}. Waiting for results...`);
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    // 4. Poll for Results
+    let attempts = 0;
+    const MAX_ATTEMPTS = 120; // 120 * 3s = 6 minutes max wait
+    
+    while (attempts < MAX_ATTEMPTS) {
+        attempts++;
+        await new Promise(r => setTimeout(r, 3000)); // Wait 3 seconds
         
-        const chunk = decoder.decode(value, { stream: true });
-        
-        // Check for heartbeats to reassure user
-        if (chunk.includes("KEEP_ALIVE_PING")) {
-             if (!hasReceivedHeartbeat) {
-                 log("Heartbeat received (Gemini is thinking, connection active)...");
-                 hasReceivedHeartbeat = true;
-             }
-        } else {
-            // Log only when we get real data chunks to avoid spam
-            if (chunk.trim().length > 5) {
-                log(`Data chunk received (${chunk.length} bytes)`);
+        // Log a "heartbeat" to the UI every 15 seconds (every 5th attempt)
+        if (attempts % 5 === 0) {
+            log(`Checking status (Attempt ${attempts}/${MAX_ATTEMPTS})...`);
+        }
+
+        const pollResp = await fetch('/.netlify/functions/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'check_status', jobId })
+        });
+
+        if (pollResp.status === 200) {
+            // Success!
+            const data = await pollResp.json();
+            if (data.status === 'COMPLETED' && data.result) {
+                log("Job Completed! Result received.");
+                return parseResponse(data.result, mode);
+            } else if (data.status === 'ERROR') {
+                throw new Error(`Background Processing Error: ${data.error}`);
             }
-        }
-        
-        rawAccumulatedText += chunk;
-    }
-
-    log(`Stream complete. Total Length: ${rawAccumulatedText.length}`);
-    log("Step 5: Cleaning and Parsing Response...");
-    
-    // CRITICAL: Remove the Heartbeat tags before parsing JSON
-    const cleanJsonText = rawAccumulatedText.replace(/<!-- KEEP_ALIVE_PING -->\n?/g, '');
-    
-    let fullText = "";
-    
-    try {
-        // Try strict JSON parse first
-        const responseArray = JSON.parse(cleanJsonText);
-        
-        if (Array.isArray(responseArray)) {
-            log("Format: Valid JSON Array detected.");
-            responseArray.forEach((item: any) => {
-                if (item.candidates && item.candidates[0] && item.candidates[0].content && item.candidates[0].content.parts) {
-                    item.candidates[0].content.parts.forEach((part: any) => {
-                        if (part.text) fullText += part.text;
-                    });
-                }
-            });
+            // If status is 'PROCESSING', continues loop
+        } else if (pollResp.status === 404) {
+             // Job ID not found yet (worker might be starting up), continue
         } else {
-            // It might be a single object error
-            log("Format: Not an array. Checking for single object...");
-            if (responseArray.error) {
-                throw new Error(`Gemini API Error: ${JSON.stringify(responseArray.error)}`);
-            }
+            // Actual network error
+            log(`Polling error: ${pollResp.statusText}`);
         }
-    } catch (e: any) {
-        log(`JSON PARSE FAILED: ${e.message}`);
-        log("--- RAW RESPONSE START (First 500 chars) ---");
-        log(cleanJsonText.substring(0, 500)); // Log the CLEAN text
-        log("--- RAW RESPONSE END ---");
-        
-        if (cleanJsonText.trim().startsWith("<!DOCTYPE html>")) {
-             throw new Error("Received HTML (likely a Server Timeout or 502 Bad Gateway) instead of JSON.");
-        }
-
-        // Attempt to just treat it as text if it's not JSON
-        log("Attempting to use raw text as fallback...");
-        fullText = cleanJsonText; 
     }
 
-    if (!fullText) {
-        throw new Error("Parsed result is empty. The model returned no text.");
-    }
-
-    return parseResponse(fullText, mode);
+    throw new Error("Timeout: Background job took too long to complete.");
 
   } catch (error) {
     console.error("Error in SaaS flow:", error);
@@ -206,7 +167,13 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         const lastBrace = cleanText.lastIndexOf('}');
         
         if (firstBrace === -1 || lastBrace === -1) {
-             throw new Error("No JSON object found in text");
+             // Fallback: treat as plain text if we asked for JSON but got text
+             return {
+                 transcription: jsonText,
+                 summary: "Raw text received (could not parse JSON)",
+                 decisions: [],
+                 actionItems: []
+             };
         }
         
         const jsonOnly = cleanText.substring(firstBrace, lastBrace + 1);
@@ -220,10 +187,9 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         };
     } catch (e) {
         console.error("Failed to parse inner JSON structure", e);
-        // Return a partial success so the user sees *something*
         return {
-            transcription: jsonText, // Put the raw text in transcription so they don't lose data
-            summary: "Error parsing structured notes. See Transcription tab for raw output.",
+            transcription: jsonText, 
+            summary: "Error parsing structured notes.",
             decisions: [],
             actionItems: []
         };
