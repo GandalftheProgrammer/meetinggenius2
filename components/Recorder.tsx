@@ -1,7 +1,11 @@
+
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
+
+// Tiny silent MP3 to keep the Audio Session active on mobile
+const SILENT_AUDIO_URI = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////wAAADFMYXZjNTguNTQuAAAAAAAAAAAAAAAAJAAAAAAAAAAAASAAxIirAAAA//OEAAAAAAAAAAAAAAAAAAAAAAA';
 
 interface RecorderProps {
   appState: AppState;
@@ -41,6 +45,9 @@ const Recorder: React.FC<RecorderProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Silent Audio Player Ref
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     // @ts-ignore 
@@ -48,8 +55,18 @@ const Recorder: React.FC<RecorderProps> = ({
         setIsMobile(true);
     }
 
+    // Create the silent audio element
+    const audio = new Audio(SILENT_AUDIO_URI);
+    audio.loop = true;
+    audio.volume = 0.01; // Non-zero volume is required for iOS to consider it "playing"
+    silentAudioRef.current = audio;
+
     return () => {
       cleanupResources();
+      if (silentAudioRef.current) {
+          silentAudioRef.current.pause();
+          silentAudioRef.current = null;
+      }
     };
   }, []);
 
@@ -84,6 +101,21 @@ const Recorder: React.FC<RecorderProps> = ({
 
   const startRecording = async () => {
     try {
+      // 1. Start the Silent Loop Hack (Must happen on user gesture)
+      if (silentAudioRef.current) {
+          await silentAudioRef.current.play();
+          
+          // 2. Update Media Session Metadata so OS sees it as "Now Playing"
+          if ('mediaSession' in navigator) {
+              navigator.mediaSession.metadata = new MediaMetadata({
+                  title: 'Meeting Recording in Progress',
+                  artist: 'MeetingGenius',
+                  album: 'Do not close'
+              });
+              navigator.mediaSession.playbackState = 'playing';
+          }
+      }
+
       let finalStream: MediaStream;
 
       if (audioSource === 'system') {
@@ -101,6 +133,7 @@ const Recorder: React.FC<RecorderProps> = ({
           if (sysAudioTracks.length === 0) {
             alert("No audio shared! Please ensure you check the 'Share tab audio' box.");
             displayStream.getTracks().forEach(t => t.stop());
+            if (silentAudioRef.current) silentAudioRef.current.pause();
             return;
           }
 
@@ -127,6 +160,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
         } catch (err) {
           console.error("Error setting up mixed audio:", err);
+          if (silentAudioRef.current) silentAudioRef.current.pause();
           return; 
         }
       } else {
@@ -170,6 +204,7 @@ const Recorder: React.FC<RecorderProps> = ({
     } catch (error) {
       console.error("Error accessing audio:", error);
       alert("Could not access audio device. Please check permissions.");
+      if (silentAudioRef.current) silentAudioRef.current.pause();
     }
   };
 
@@ -178,6 +213,15 @@ const Recorder: React.FC<RecorderProps> = ({
       mediaRecorderRef.current.stop();
       cleanupResources();
       
+      // Stop the Silent Loop
+      if (silentAudioRef.current) {
+          silentAudioRef.current.pause();
+          silentAudioRef.current.currentTime = 0;
+      }
+      if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'none';
+      }
+
       setStream(null);
       streamRef.current = null;
       setIsRecording(false);
@@ -303,7 +347,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
       {isMobile && !isRecording && (
          <div className="mb-6 text-center">
-           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized</span>
+           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized (Background Safe)</span>
          </div>
       )}
 
