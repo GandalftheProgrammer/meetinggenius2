@@ -101,6 +101,7 @@ const App: React.FC = () => {
   // Helper to save Audio to Drive (Safety Backup)
   const saveAudioBackup = async (blob: Blob, currentTitle: string) => {
     if (!isDriveConnected) return;
+    // Replace non-alphanumeric chars with underscore to ensure valid filename
     const safeTitle = currentTitle.replace(/[^a-z0-9]/gi, '_');
     try {
         addLog("Backing up audio to Drive (/Audio)...");
@@ -123,7 +124,14 @@ const App: React.FC = () => {
           // We can't immediately save because auth is async popup, user has to click again
           return; 
       }
-      let currentTitle = title.trim() || `Meeting ${new Date().toLocaleDateString()}`;
+      
+      let currentTitle = title.trim();
+      if (!currentTitle) {
+          // If no title, use "Meeting Date Time"
+          const now = new Date();
+          currentTitle = `Meeting ${now.toLocaleDateString()} ${now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+      }
+      
       await saveAudioBackup(combinedBlob, currentTitle);
   };
 
