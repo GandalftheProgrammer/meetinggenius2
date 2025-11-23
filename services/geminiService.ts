@@ -4,14 +4,13 @@ import { MeetingData, ProcessingMode } from '../types';
 export const processMeetingAudio = async (
   audioBlob: Blob, 
   mimeType: string, 
-  mode: ProcessingMode = 'ALL',
-  onLog: (msg: string) => void
+  mode: ProcessingMode = 'ALL'
 ): Promise<MeetingData> => {
   try {
-    onLog(`Starting SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`Starting SaaS Flow (Chunked Proxy). Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB`);
 
     // 1. Handshake: Get authorized Upload URL from Backend
-    onLog("Step 1: Requesting Upload URL...");
+    console.log("Step 1: Requesting Upload URL...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -27,21 +26,20 @@ export const processMeetingAudio = async (
         throw new Error(`Handshake Failed: ${err}`);
     }
     const { uploadUrl } = await authResponse.json();
-    onLog("Step 1: Upload URL received.");
 
     // 2. Chunk Loop: Send data to Backend -> Backend sends to Google
-    const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks
+    const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks (Safe for Netlify's 6MB limit)
     let offset = 0;
     let fileUri: string | null = null;
     
-    onLog("Step 2: Starting Chunked Upload...");
+    console.log("Step 2: Starting Chunked Proxy Upload...");
     
     while (offset < audioBlob.size) {
         const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
         const chunkBase64 = await blobToBase64(chunkBlob);
         const isLast = offset + chunkBlob.size >= audioBlob.size;
         
-        onLog(`Uploading chunk offset ${offset}...`);
+        // console.log(`Uploading chunk: ${offset} - ${offset + chunkBlob.size}`);
 
         const chunkResp = await fetch('/.netlify/functions/gemini', {
             method: 'POST',
@@ -63,51 +61,33 @@ export const processMeetingAudio = async (
         
         if (isLast) {
             const result = await chunkResp.json();
+            // Google returns the file metadata in the final response
             if (result.file && result.file.uri) {
                 fileUri = result.file.uri;
-                onLog(`File upload finalized. URI: ${fileUri}`);
             } else {
-                throw new Error("Upload finalized but no File URI returned.");
+                throw new Error("Upload finalized but no File URI returned from Google.");
             }
         }
         offset += CHUNK_SIZE;
     }
 
     if (!fileUri) throw new Error("File URI missing after upload.");
+    console.log(`Step 2 Complete. File URI: ${fileUri}`);
 
-    // 3. Generate: Ask Backend to process the file (STREAMING)
-    onLog("Step 3: Sending generation request...");
+    // 3. Generate: Ask Backend to process the file
+    console.log("Step 3: generating...");
     const genResponse = await fetch('/.netlify/functions/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'generate', fileUri, mimeType, mode })
     });
     
-    if (!genResponse.ok) {
-      const errorText = await genResponse.text();
-      throw new Error(`Generation Request Failed: ${errorText}`);
-    }
-
-    onLog("Stream connection established. Reading response...");
-    const reader = genResponse.body?.getReader();
-    if (!reader) throw new Error("Response body is not readable");
-
-    const decoder = new TextDecoder();
-    let jsonText = '';
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        jsonText += chunk;
-        // Optional: onLog(`Received stream chunk: ${chunk.length} bytes`);
-    }
+    if (!genResponse.ok) throw new Error(await genResponse.text());
+    const genResult = await genResponse.json();
     
-    onLog("Stream complete. Parsing JSON...");
-    return parseResponse(jsonText, mode);
+    return parseResponse(genResult.text, mode);
 
   } catch (error) {
-    onLog(`CRITICAL ERROR: ${error instanceof Error ? error.message : String(error)}`);
     console.error("Error in SaaS flow:", error);
     throw error;
   }
@@ -118,6 +98,7 @@ function blobToBase64(blob: Blob): Promise<string> {
     const reader = new FileReader();
     reader.onloadend = () => {
       const res = reader.result as string;
+      // Remove "data:audio/webm;base64," prefix
       const base64 = res.split(',')[1];
       resolve(base64);
     };
@@ -139,8 +120,8 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     } catch (e) {
         console.error("Failed to parse JSON from AI", jsonText);
         return {
-            transcription: "Error parsing response.",
-            summary: "Error parsing response.",
+            transcription: "Error parsing response",
+            summary: "Error parsing response",
             decisions: [],
             actionItems: []
         };
