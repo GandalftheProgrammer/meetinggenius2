@@ -41,17 +41,17 @@ export const processMeetingAudio = async (
     // We use 8MB chunks because Google API requires multiples of 256KB.
     const CHUNK_SIZE = 8 * 1024 * 1024; 
     let offset = 0;
+    let fileUri: string | null = null;
     
     log("Step 2: Starting Direct Upload (8MB chunks)...");
     
-    // Loop through chunks and upload them using 'upload' command
+    // Loop through chunks
     while (offset < audioBlob.size) {
         const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
-        // CRITICAL: Convert to ArrayBuffer to prevent browser from adding Content-Type header
-        // which can cause CORS or Signature errors on the signed URL.
         const chunkBuffer = await chunkBlob.arrayBuffer();
+        const isLastChunk = offset + chunkBlob.size >= audioBlob.size;
         
-        log(`Uploading chunk at offset ${(offset / 1024 / 1024).toFixed(2)}MB...`);
+        log(`Uploading chunk at offset ${(offset / 1024 / 1024).toFixed(2)}MB...${isLastChunk ? ' (Final)' : ''}`);
 
         let attempt = 0;
         let uploaded = false;
@@ -61,11 +61,15 @@ export const processMeetingAudio = async (
             try {
                 attempt++;
                 
+                // CRITICAL: The last chunk MUST have 'finalize' command if it doesn't match granularity.
+                // We use ArrayBuffer to prevent 'Failed to fetch' (CORS/Header) errors.
+                const command = isLastChunk ? 'upload, finalize' : 'upload';
+
                 const chunkResp = await fetch(uploadUrl, {
                     method: 'POST',
                     headers: {
                         'X-Goog-Upload-Offset': offset.toString(),
-                        'X-Goog-Upload-Command': 'upload', 
+                        'X-Goog-Upload-Command': command, 
                     },
                     body: chunkBuffer 
                 });
@@ -73,6 +77,19 @@ export const processMeetingAudio = async (
                 if (!chunkResp.ok) {
                      const err = await chunkResp.text();
                      throw new Error(`Chunk Upload Failed [${chunkResp.status}]: ${err}`);
+                }
+                
+                // If we finalized, we get the file URI in the response
+                if (isLastChunk) {
+                    const result = await chunkResp.json();
+                    if (result.file && result.file.uri) {
+                        fileUri = result.file.uri;
+                    } else if (result.uri) {
+                        fileUri = result.uri;
+                    } else {
+                        // Fallback in case response format shifts
+                        console.warn("Finalize response missing URI, checking body:", result);
+                    }
                 }
                 
                 uploaded = true;
@@ -90,52 +107,13 @@ export const processMeetingAudio = async (
         offset += CHUNK_SIZE;
     }
 
-    // 3. Finalize Upload
-    // We send a separate finalize command. This splits the heavy data upload from the 
-    // response processing, reducing the chance of "Failed to fetch" on the last step.
-    log("Step 2b: Finalizing upload...");
-    let fileUri: string | null = null;
-    let finalizeAttempt = 0;
-
-    while (finalizeAttempt < 3 && !fileUri) {
-        try {
-            finalizeAttempt++;
-            const finalizeResp = await fetch(uploadUrl, {
-                method: 'POST',
-                headers: {
-                    'X-Goog-Upload-Offset': audioBlob.size.toString(),
-                    'X-Goog-Upload-Command': 'finalize',
-                },
-                body: '' // Empty body
-            });
-
-            if (!finalizeResp.ok) {
-                 const err = await finalizeResp.text();
-                 throw new Error(`Finalize Failed [${finalizeResp.status}]: ${err}`);
-            }
-
-            const result = await finalizeResp.json();
-            if (result.file && result.file.uri) {
-                fileUri = result.file.uri;
-            } else if (result.uri) {
-                fileUri = result.uri;
-            } else {
-                throw new Error("No File URI in finalize response");
-            }
-
-        } catch (e: any) {
-             console.warn(`Finalize attempt ${finalizeAttempt} failed:`, e);
-             if (finalizeAttempt >= 3) {
-                 throw new Error(`Failed to finalize upload. Last error: ${e.message}`);
-             }
-             log(`Finalize failed (Attempt ${finalizeAttempt}). Retrying in 2s...`);
-             await new Promise(r => setTimeout(r, 2000));
-        }
+    if (!fileUri) {
+         throw new Error("Upload process completed but no File URI was returned from Google.");
     }
 
     log(`File upload finalized. URI: ${fileUri}`);
 
-    // 4. Start Background Job
+    // 3. Start Background Job
     log(`Step 3: Queuing Background Job with model: ${model}...`);
     
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -153,7 +131,7 @@ export const processMeetingAudio = async (
     
     log(`Job started with ID: ${jobId}. Waiting for results...`);
 
-    // 5. Poll for Results
+    // 4. Poll for Results
     let attempts = 0;
     const MAX_ATTEMPTS = 200; // 10 minutes max
     
