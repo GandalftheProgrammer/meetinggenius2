@@ -38,75 +38,92 @@ export const processMeetingAudio = async (
     const { uploadUrl } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Direct Upload (Browser -> Google)
-    // STRATEGY: Standard HTTP PUT.
-    // We remove 'X-Goog-Upload-Command' headers because they trigger CORS preflight errors ('Failed to fetch')
-    // on the signed URL. Instead, we rely on the server automatically finalizing when it receives
-    // the total number of bytes declared in Step 1.
+    // 2. Direct Upload (Browser -> Google) via XMLHttpRequest
+    // STRATEGY: Single PUT request with Content-Range.
+    // We use XHR instead of fetch because 'Failed to fetch' is opaque and often masks 
+    // network timeouts or CORS preflight failures that XHR handles more robustly.
     
-    log(`Step 2: Starting Direct Upload (Single Request)...`);
+    log(`Step 2: Starting Direct Upload (XHR)...`);
     
-    // Convert to ArrayBuffer to ensure clean transmission
+    // Convert to ArrayBuffer to ensure clean transmission without browser auto-headers
     const arrayBuffer = await audioBlob.arrayBuffer();
-
+    
+    let fileUri: string | null = null;
     let attempt = 0;
     let uploaded = false;
-    let fileUri: string | null = null;
 
     while (attempt < 3 && !uploaded) {
+        attempt++;
         try {
-            attempt++;
-            
-            // NOTE: We do NOT use 'X-Goog-Upload-Command' here.
-            // We only send Content-Type. The server matches bytes received vs bytes expected.
-            const uploadResp = await fetch(uploadUrl, {
-                method: 'PUT', 
-                headers: { 
-                    'Content-Type': mimeType
-                },
-                body: arrayBuffer
+            const response = await new Promise<any>((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', uploadUrl);
+                
+                // STANDARD HEADERS ONLY
+                // We avoid X-Goog-* headers here to prevent CORS preflight issues.
+                // Content-Range is standard and required for resumable sessions.
+                xhr.setRequestHeader('Content-Type', mimeType);
+                xhr.setRequestHeader('Content-Range', `bytes 0-${audioBlob.size - 1}/${audioBlob.size}`);
+
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable && e.total > 0) {
+                        const percent = ((e.loaded / e.total) * 100).toFixed(0);
+                        // Log every 20% to avoid spamming
+                        if (Number(percent) % 20 === 0 && Number(percent) !== 100) {
+                            log(`Uploading... ${percent}%`);
+                        }
+                    }
+                };
+
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const json = JSON.parse(xhr.responseText);
+                            resolve(json);
+                        } catch (e) {
+                            // Sometimes the response is empty or not JSON, but status is OK
+                            resolve({});
+                        }
+                    } else {
+                        reject(new Error(`Server returned ${xhr.status}: ${xhr.responseText}`));
+                    }
+                };
+
+                xhr.onerror = () => {
+                    reject(new Error("Network Error (XHR Failed)"));
+                };
+
+                xhr.send(arrayBuffer);
             });
-            
-            if (!uploadResp.ok) {
-                 const err = await uploadResp.text();
-                 throw new Error(`Upload Failed [${uploadResp.status}]: ${err}`);
-            }
-            
-            // Extract file info from response
-            const result = await uploadResp.json();
-            if (result.file && result.file.uri) {
-                fileUri = result.file.uri;
-            } else if (result.uri) {
-                fileUri = result.uri;
+
+            // Extract URI from response
+            if (response.file && response.file.uri) {
+                fileUri = response.file.uri;
             } else {
-                console.warn("Upload successful but no URI returned immediately. This is expected for some endpoints.");
-                // Note: If the response is empty, we might need to query the file state, 
-                // but usually the Resumable API returns metadata on completion.
+                // Should not happen with valid upload response
+                console.warn("Upload succeeded but no URI in response body:", response);
             }
-            
             uploaded = true;
+            log("Upload phase completed.");
 
         } catch (e: any) {
-            console.warn(`Upload attempt ${attempt} failed:`, e);
+            console.error(`Upload attempt ${attempt} failed:`, e);
             if (attempt >= 3) {
-                throw new Error(`Failed to upload file after 3 attempts. Last error: ${e.message}`);
+                throw new Error(`Upload failed after 3 attempts. Last error: ${e.message}`);
             }
             log(`Upload failed (Attempt ${attempt}). Retrying in 2s...`);
             await new Promise(r => setTimeout(r, 2000));
         }
     }
-
-    // Fallback: If URI wasn't returned in the PUT response, we can't proceed easily.
-    // However, usually the handshake doesn't return the URI, the final PUT does.
-    if (!fileUri) {
-         // Attempt to construct URI if we can (rare fallback)
-         console.warn("No URI in upload response, checking context...");
-         // Often the response body is the File resource
-    }
     
-    if (!fileUri) throw new Error("File upload completed, but Google did not return a File URI.");
+    if (!fileUri) {
+         // Fallback: If the PUT response didn't contain the URI, we might need to 
+         // query the file state or assume the ID if we had it. 
+         // However, the Google GenAI File API always returns the file object on completion.
+         throw new Error("File upload completed, but Google did not return a File URI.");
+    }
 
-    log(`File upload finalized. URI: ${fileUri}`);
+    log(`File URI: ${fileUri}`);
 
     // 3. Start Background Job
     log(`Step 3: Queuing Background Job with model: ${model}...`);
