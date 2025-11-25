@@ -52,7 +52,8 @@ export const processMeetingAudio = async (
 
     while (offset < totalBytes) {
         const chunkEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
-        const chunk = audioBlob.slice(offset, chunkEnd);
+        const chunkBlob = audioBlob.slice(offset, chunkEnd);
+        const chunkArrayBuffer = await chunkBlob.arrayBuffer(); // Convert to ArrayBuffer
         const isLastChunk = chunkEnd === totalBytes;
         
         // Content-Range: bytes start-end/total
@@ -66,10 +67,12 @@ export const processMeetingAudio = async (
             xhr.open('PUT', uploadUrl, true);
             
             // Standard HTTP Headers for Resumable Upload
-            xhr.setRequestHeader('Content-Length', chunk.size.toString());
+            // REMOVED: Content-Length (Unsafe to set manually in browser)
+            // ADDED: Content-Range
             xhr.setRequestHeader('Content-Range', rangeHeader);
-            // NOTE: We do NOT set X-Goog-Upload-Command here to avoid CORS issues.
-            // The Content-Range tells the server where we are.
+            
+            // NOTE: We do NOT set Content-Type. Sending ArrayBuffer sends no Content-Type, 
+            // which avoids mismatches since we defined it in the handshake.
             
             xhr.upload.onprogress = (e) => {
                 if (e.lengthComputable && isLastChunk) {
@@ -90,19 +93,11 @@ export const processMeetingAudio = async (
                             log("Upload Complete. File URI obtained.");
                             resolve();
                         } else {
-                            // Sometimes the final response doesn't have the file object directly if headers differ
-                            // But usually for Gemini API it does.
-                            // If missing, we might need to assume success or query it.
-                            // However, let's assume standard success for now.
                             log("Upload Complete (200/201).");
-                            // Fallback: If we don't get the URI, we have a problem. 
-                            // But usually 200 OK body contains the metadata.
-                            if (!fileUri && json.uri) fileUri = json.uri; // Try alternate
-                             resolve();
+                            if (!fileUri && json.uri) fileUri = json.uri; 
+                            resolve();
                         }
                     } catch (e) {
-                         // Valid JSON might not always be returned on 200/201 depending on API version?
-                         // But Gemini API docs say it returns the File resource.
                          log(`Warning: Could not parse response JSON: ${xhr.responseText}`);
                          resolve();
                     }
@@ -115,21 +110,14 @@ export const processMeetingAudio = async (
                 reject(new Error("Network Error during Chunk Upload"));
             };
 
-            xhr.send(chunk);
+            // Send raw bytes (ArrayBuffer)
+            xhr.send(chunkArrayBuffer);
         });
 
         offset += CHUNK_SIZE;
     }
 
     if (!fileUri) {
-        // If we didn't capture the URI from the last chunk response, we can't proceed.
-        // This acts as a safety check.
-        // Wait... sometimes the uploadUrl itself contains the ID? No.
-        // Let's hope the last chunk returned the JSON.
-        // If not, we might fail here.
-        // One edge case: If the file is smaller than 8MB, the first chunk is the last chunk.
-        // The 200 OK response should definitely contain the File resource.
-        
         throw new Error("Upload finished but no File URI was returned from Google.");
     }
     

@@ -38,6 +38,7 @@ export default async (req: Request) => {
     // This implements Option B: Backend gets URL, Frontend uploads directly.
     if (action === 'authorize_upload') {
       const { mimeType, fileSize } = payload;
+      const clientOrigin = req.headers.get("origin") || "";
       
       // Strict type check
       const fileSizeStr = String(fileSize);
@@ -49,7 +50,9 @@ export default async (req: Request) => {
           'X-Goog-Upload-Command': 'start',
           'X-Goog-Upload-Header-Content-Length': fileSizeStr,
           'X-Goog-Upload-Header-Content-Type': mimeType,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          // CRITICAL: Tell Google to allow this origin for the subsequent PUT request
+          'X-Goog-Upload-Origin': clientOrigin
         },
         body: JSON.stringify({ 
             file: {
