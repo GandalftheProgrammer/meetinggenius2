@@ -1,4 +1,3 @@
-
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
 export const processMeetingAudio = async (
@@ -38,69 +37,51 @@ export const processMeetingAudio = async (
     const { uploadUrl } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Direct Upload (Browser -> Google)
-    // CRITICAL FIX: We use a 1GB chunk size to force the upload to happen in a SINGLE request.
-    // The previous chunking logic (8MB) caused stability issues on the final chunk for files > 8MB.
-    // By sending the whole file at once, we use the exact same logic that works for small files.
-    const CHUNK_SIZE = 1024 * 1024 * 1024; // 1GB limit
+    // 2. Direct Chunk Upload (Browser -> Google)
+    // We use 8MB chunks because Google API requires multiples of 256KB, 
+    // but the error message specifically requested 8MB granularity.
+    // Also, direct upload bypasses Netlify's 6MB payload limit.
+    const CHUNK_SIZE = 8 * 1024 * 1024; 
     let offset = 0;
     let fileUri: string | null = null;
     
-    log("Step 2: Starting Direct Upload...");
+    log("Step 2: Starting Direct Upload (8MB chunks)...");
     
     while (offset < audioBlob.size) {
         const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
         const isLast = offset + chunkBlob.size >= audioBlob.size;
         
-        // Use XHR for better reliability with binary uploads than fetch
-        // and to avoid "Failed to fetch" opacity
-        await new Promise<void>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', uploadUrl, true);
-            
-            // Google Resumable Protocol Headers
-            // Note: We do NOT set Content-Length manually, the browser does it safely.
-            xhr.setRequestHeader('X-Goog-Upload-Offset', offset.toString());
-            xhr.setRequestHeader('X-Goog-Upload-Command', isLast ? 'upload, finalize' : 'upload');
-            
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const percent = ((offset + e.loaded) / audioBlob.size) * 100;
-                    if (percent % 10 === 0 || percent > 90) {
-                        log(`Uploading... ${percent.toFixed(0)}%`);
-                    }
-                }
-            };
+        log(`Uploading chunk offset ${(offset / 1024 / 1024).toFixed(2)}MB...`);
 
-            xhr.onload = () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    if (isLast) {
-                        try {
-                            const result = JSON.parse(xhr.responseText);
-                            if (result.file && result.file.uri) {
-                                fileUri = result.file.uri;
-                            } else if (result.uri) {
-                                fileUri = result.uri;
-                            } else {
-                                reject(new Error("Upload finalized but no File URI returned."));
-                                return;
-                            }
-                        } catch (e) {
-                            reject(new Error("Failed to parse upload response JSON"));
-                            return;
-                        }
-                    }
-                    resolve();
-                } else {
-                    reject(new Error(`Upload failed. Status: ${xhr.status} ${xhr.statusText}`));
-                }
-            };
-
-            xhr.onerror = () => reject(new Error(`Network Error during upload (Status ${xhr.status})`));
-            
-            xhr.send(chunkBlob);
+        // Send raw binary data directly to Google
+        const command = isLast ? 'upload, finalize' : 'upload';
+        
+        const chunkResp = await fetch(uploadUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Length': chunkBlob.size.toString(),
+                'X-Goog-Upload-Offset': offset.toString(),
+                'X-Goog-Upload-Command': command,
+            },
+            body: chunkBlob // Send blob directly, no JSON/Base64 overhead
         });
-
+        
+        if (!chunkResp.ok) {
+             const err = await chunkResp.text();
+             throw new Error(`Direct Chunk Upload Failed: ${err}`);
+        }
+        
+        if (isLast) {
+            const result = await chunkResp.json();
+            if (result.file && result.file.uri) {
+                fileUri = result.file.uri;
+            } else {
+                // Sometimes the file object is nested or just returned as the body
+                // Check if result itself is the file object
+                if (result.uri) fileUri = result.uri;
+                else throw new Error("Upload finalized but no File URI returned from Google.");
+            }
+        }
         offset += CHUNK_SIZE;
     }
 
@@ -108,7 +89,7 @@ export const processMeetingAudio = async (
     log(`File upload finalized. URI: ${fileUri}`);
 
     // 3. Start Background Job
-    log(`Step 3: Queuing Background Job with model: ${model}...`);
+    log(`Step 3: [NEW] Queuing Background Job with model: ${model}...`);
     
     // Generate a unique ID for this job
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -120,12 +101,13 @@ export const processMeetingAudio = async (
         body: JSON.stringify({ fileUri, mimeType, mode, jobId, model })
     });
 
+    // Netlify Background functions typically return 202 Accepted immediately
     if (startResp.status !== 202 && !startResp.ok) {
         const errorText = await startResp.text();
         throw new Error(`Failed to start background job: ${errorText}`);
     }
     
-    log(`Job started with ID: ${jobId}. Waiting for results...`);
+    log(`Job started with ID: ${jobId}. Waiting for results (this may take a minute)...`);
 
     // 4. Poll for Results
     let attempts = 0;
@@ -173,6 +155,7 @@ export const processMeetingAudio = async (
 };
 
 function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
+    // If it's a File object, we can look at the extension
     if ('name' in blob) {
         const name = (blob as File).name.toLowerCase();
         if (name.endsWith('.mp3')) return 'audio/mp3';
@@ -183,19 +166,36 @@ function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
         if (name.endsWith('.flac')) return 'audio/flac';
         if (name.endsWith('.webm')) return 'audio/webm';
     }
+    // Fallback to blob type if valid, otherwise default
     if (blob.type && blob.type !== 'application/octet-stream') {
         return blob.type;
     }
     return defaultType;
 }
 
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = reader.result as string;
+      const base64 = res.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     try {
+        // Clean markdown code blocks if present
         const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+        // Find the first '{' and last '}'
         const firstBrace = cleanText.indexOf('{');
         const lastBrace = cleanText.lastIndexOf('}');
         
         if (firstBrace === -1 || lastBrace === -1) {
+             // Fallback: treat as plain text if we asked for JSON but got text
              return {
                  transcription: jsonText,
                  summary: "Raw text received (could not parse JSON)",
@@ -210,7 +210,7 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         return {
             transcription: rawData.transcription || "",
             summary: rawData.summary || "",
-            conclusions: rawData.conclusions || rawData.decisions || [], 
+            conclusions: rawData.conclusions || rawData.decisions || [], // Handle both for backward compatibility
             actionItems: rawData.actionItems || [],
         };
     } catch (e) {
