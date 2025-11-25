@@ -13,20 +13,20 @@ export const processMeetingAudio = async (
   };
 
   try {
-    // Determine MIME type strictly from file extension if available
     const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
+    const totalBytes = audioBlob.size;
     
-    log(`Starting Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
+    log(`Starting Flow. Blob size: ${(totalBytes / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
     // 1. Handshake (Server-side to protect API Key)
-    log("Step 1: Requesting Upload URL via Netlify Proxy...");
+    log("Step 1: Requesting Upload URL (Option B Handshake)...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
           action: 'authorize_upload', 
           mimeType, 
-          fileSize: audioBlob.size.toString() 
+          fileSize: totalBytes.toString() 
       })
     });
 
@@ -37,97 +37,103 @@ export const processMeetingAudio = async (
     const { uploadUrl } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Direct Upload (Browser -> Google)
-    // We CANNOT use the proxy here because Netlify limits payload to 6MB, 
-    // but Google requires chunks to be multiples of 8MB. It's a deadlock.
-    // We must use Direct Upload.
-    
-    log("Step 2: Starting Direct Upload (Single PUT)...");
-    
-    // We use XHR instead of fetch to get better error reporting and avoid some CORS pitfalls
-    await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('PUT', uploadUrl, true);
+    // 2. Direct Upload Loop (Browser -> Google)
+    // We use the standard Resumable Upload Protocol:
+    // - PUT requests
+    // - 8MB chunks (Google Granularity)
+    // - Content-Range header
+    // - 308 (Resume Incomplete) or 200/201 (Created) status codes
+
+    const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
+    let offset = 0;
+    let fileUri = '';
+
+    log(`Step 2: Starting Direct Upload (${(CHUNK_SIZE/1024/1024).toFixed(0)}MB chunks)...`);
+
+    while (offset < totalBytes) {
+        const chunkEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
+        const chunk = audioBlob.slice(offset, chunkEnd);
+        const isLastChunk = chunkEnd === totalBytes;
         
-        // CRITICAL: Google's signed URL protocol for "upload, finalize" in one go
-        // requires specific headers to match the handshake.
-        xhr.setRequestHeader('Content-Type', mimeType);
-        xhr.setRequestHeader('X-Goog-Upload-Command', 'upload, finalize');
-        xhr.setRequestHeader('X-Goog-Upload-Offset', '0');
+        // Content-Range: bytes start-end/total
+        // Note: 'end' is inclusive in HTTP Range header (e.g. 0-9 for 10 bytes)
+        const rangeHeader = `bytes ${offset}-${chunkEnd - 1}/${totalBytes}`;
         
-        // Debug logging for XHR lifecycle
-        xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-                const percent = ((e.loaded / e.total) * 100).toFixed(0);
-                if (parseInt(percent) % 10 === 0) { // Log every 10%
-                    log(`Uploading... ${percent}%`);
+        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${((chunkEnd/totalBytes)*100).toFixed(0)}%)`);
+
+        await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', uploadUrl, true);
+            
+            // Standard HTTP Headers for Resumable Upload
+            xhr.setRequestHeader('Content-Length', chunk.size.toString());
+            xhr.setRequestHeader('Content-Range', rangeHeader);
+            // NOTE: We do NOT set X-Goog-Upload-Command here to avoid CORS issues.
+            // The Content-Range tells the server where we are.
+            
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable && isLastChunk) {
+                   // Optional: finer progress for the last chunk
                 }
-            }
-        };
+            };
 
-        xhr.onload = () => {
-            if (xhr.status === 200) {
-                log("Upload complete (200 OK).");
-                resolve();
-            } else {
-                log(`Upload failed. Status: ${xhr.status} - ${xhr.statusText}`);
-                log(`Response: ${xhr.responseText}`);
-                reject(new Error(`Upload XHR Failed: ${xhr.status}`));
-            }
-        };
-
-        xhr.onerror = () => {
-            log(`Network Error (Status ${xhr.status}). This usually means CORS or Connection Reset.`);
-            reject(new Error("Network Error during Direct Upload"));
-        };
-
-        xhr.send(audioBlob); 
-    });
-
-    log(`File upload finalized.`);
-
-    // 3. Start Background Job
-    // Since we don't get the file URI back from the PUT response easily in all cases,
-    // we can assume the uploadUrl acts as the reference or we re-query via the backend 
-    // if needed. However, the Gemini API usually returns the file metadata in the PUT response.
-    // Let's grab the file URI from the XHR response if possible, or fallback.
-    
-    // Actually, for the background job we need the 'fileUri'. 
-    // The 'uploadUrl' is temporary. The 'authorize_upload' step usually doesn't return the final fileUri.
-    // The final response of the PUT request contains the file metadata including 'uri'.
-    // We need to capture that JSON from the XHR.
-    
-    // NOTE: I need to refactor the XHR promise above to return the response JSON.
-    
-    // ... Refactoring Step 2 logic slightly to capture response ...
-    
-    const uploadResult = await new Promise<any>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('PUT', uploadUrl, true);
-        xhr.setRequestHeader('Content-Type', mimeType);
-        xhr.setRequestHeader('X-Goog-Upload-Command', 'upload, finalize');
-        xhr.setRequestHeader('X-Goog-Upload-Offset', '0');
-        
-        xhr.onload = () => {
-            if (xhr.status === 200) {
-                try {
-                    const json = JSON.parse(xhr.responseText);
-                    resolve(json);
-                } catch (e) {
-                    reject(new Error("Invalid JSON response from Google Upload"));
+            xhr.onload = () => {
+                // 308: Resume Incomplete (Chunk accepted, waiting for more)
+                // 200/201: Upload Complete
+                if (xhr.status === 308) {
+                    resolve();
+                } else if (xhr.status === 200 || xhr.status === 201) {
+                    try {
+                        const json = JSON.parse(xhr.responseText);
+                        if (json.file && json.file.uri) {
+                            fileUri = json.file.uri;
+                            log("Upload Complete. File URI obtained.");
+                            resolve();
+                        } else {
+                            // Sometimes the final response doesn't have the file object directly if headers differ
+                            // But usually for Gemini API it does.
+                            // If missing, we might need to assume success or query it.
+                            // However, let's assume standard success for now.
+                            log("Upload Complete (200/201).");
+                            // Fallback: If we don't get the URI, we have a problem. 
+                            // But usually 200 OK body contains the metadata.
+                            if (!fileUri && json.uri) fileUri = json.uri; // Try alternate
+                             resolve();
+                        }
+                    } catch (e) {
+                         // Valid JSON might not always be returned on 200/201 depending on API version?
+                         // But Gemini API docs say it returns the File resource.
+                         log(`Warning: Could not parse response JSON: ${xhr.responseText}`);
+                         resolve();
+                    }
+                } else {
+                    reject(new Error(`Chunk Upload Failed: ${xhr.status} ${xhr.statusText}`));
                 }
-            } else {
-                reject(new Error(`Upload XHR Failed: ${xhr.status}`));
-            }
-        };
-        xhr.onerror = () => reject(new Error("Network Error"));
-        xhr.send(audioBlob);
-    });
+            };
 
-    const fileUri = uploadResult.file.uri;
-    if (!fileUri) throw new Error("No file URI returned from Google.");
+            xhr.onerror = () => {
+                reject(new Error("Network Error during Chunk Upload"));
+            };
+
+            xhr.send(chunk);
+        });
+
+        offset += CHUNK_SIZE;
+    }
+
+    if (!fileUri) {
+        // If we didn't capture the URI from the last chunk response, we can't proceed.
+        // This acts as a safety check.
+        // Wait... sometimes the uploadUrl itself contains the ID? No.
+        // Let's hope the last chunk returned the JSON.
+        // If not, we might fail here.
+        // One edge case: If the file is smaller than 8MB, the first chunk is the last chunk.
+        // The 200 OK response should definitely contain the File resource.
+        
+        throw new Error("Upload finished but no File URI was returned from Google.");
+    }
     
-    log(`File URI obtained: ${fileUri}`);
+    log(`File URI: ${fileUri}`);
 
     // 3. Start Background Job
     log(`Step 3: Queuing Background Job with model: ${model}...`);
@@ -197,20 +203,6 @@ function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
         return blob.type;
     }
     return defaultType;
-}
-
-// Deprecated since we use XHR direct upload now
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const res = reader.result as string;
-      const base64 = res.split(',')[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 }
 
 function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
