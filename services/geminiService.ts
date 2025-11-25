@@ -37,21 +37,24 @@ export const processMeetingAudio = async (
     const { uploadUrl } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Direct Chunk Upload (Browser -> Google)
-    // We use 8MB chunks because Google API requires multiples of 256KB.
-    const CHUNK_SIZE = 8 * 1024 * 1024; 
+    // 2. Proxied Chunk Upload (Browser -> Netlify -> Google)
+    // We use 3MB chunks to ensure Base64 payload (< 4.5MB) fits within Netlify/AWS Lambda 6MB limit.
+    // Google requires chunks to be multiples of 256KB (3MB = 12 * 256KB, so it's valid).
+    const CHUNK_SIZE = 3 * 1024 * 1024; 
     let offset = 0;
     let fileUri: string | null = null;
     
-    log("Step 2: Starting Direct Upload (8MB chunks)...");
+    log("Step 2: Starting Proxied Upload (3MB chunks)...");
     
     // Loop through chunks
     while (offset < audioBlob.size) {
         const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
-        const chunkBuffer = await chunkBlob.arrayBuffer();
         const isLastChunk = offset + chunkBlob.size >= audioBlob.size;
         
         log(`Uploading chunk at offset ${(offset / 1024 / 1024).toFixed(2)}MB...${isLastChunk ? ' (Final)' : ''}`);
+
+        // Convert Blob to Base64 for JSON transport
+        const base64Data = await blobToBase64(chunkBlob);
 
         let attempt = 0;
         let uploaded = false;
@@ -61,25 +64,25 @@ export const processMeetingAudio = async (
             try {
                 attempt++;
                 
-                // CRITICAL: The last chunk MUST have 'finalize' command if it doesn't match granularity.
-                // We use ArrayBuffer to prevent 'Failed to fetch' (CORS/Header) errors.
-                const command = isLastChunk ? 'upload, finalize' : 'upload';
-
-                const chunkResp = await fetch(uploadUrl, {
+                // Call the Proxy (Netlify Function) instead of Google directly
+                const chunkResp = await fetch('/.netlify/functions/gemini', {
                     method: 'POST',
-                    headers: {
-                        'X-Goog-Upload-Offset': offset.toString(),
-                        'X-Goog-Upload-Command': command, 
-                    },
-                    body: chunkBuffer 
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'upload_chunk',
+                        uploadUrl,
+                        chunkData: base64Data, // Base64 string
+                        offset: offset.toString(),
+                        isLastChunk
+                    })
                 });
                 
                 if (!chunkResp.ok) {
                      const err = await chunkResp.text();
-                     throw new Error(`Chunk Upload Failed [${chunkResp.status}]: ${err}`);
+                     throw new Error(`Proxy Upload Failed [${chunkResp.status}]: ${err}`);
                 }
                 
-                // If we finalized, we get the file URI in the response
+                // If we finalized, we get the file URI in the response from the backend
                 if (isLastChunk) {
                     const result = await chunkResp.json();
                     if (result.file && result.file.uri) {
@@ -87,7 +90,6 @@ export const processMeetingAudio = async (
                     } else if (result.uri) {
                         fileUri = result.uri;
                     } else {
-                        // Fallback in case response format shifts
                         console.warn("Finalize response missing URI, checking body:", result);
                     }
                 }
@@ -131,7 +133,7 @@ export const processMeetingAudio = async (
     
     log(`Job started with ID: ${jobId}. Waiting for results...`);
 
-    // 4. Poll for Results
+    // 4. Poll for results
     let attempts = 0;
     const MAX_ATTEMPTS = 200; // 10 minutes max
     
@@ -169,6 +171,21 @@ export const processMeetingAudio = async (
     throw error;
   }
 };
+
+// Helper to efficiently convert Blob to Base64
+async function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const result = reader.result as string;
+            // Remove the data URL prefix (e.g. "data:audio/webm;base64,")
+            const base64 = result.split(',')[1];
+            resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
 
 function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
     if ('name' in blob) {
