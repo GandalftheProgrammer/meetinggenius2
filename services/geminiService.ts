@@ -17,10 +17,12 @@ export const processMeetingAudio = async (
     // Determine MIME type strictly from file extension if available
     const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
     
-    log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
+    log(`[DEBUG] Init - Blob Size: ${audioBlob.size} bytes`);
+    log(`[DEBUG] Init - Blob Type: ${audioBlob.type}`);
+    log(`[DEBUG] Init - Computed MimeType: ${mimeType}`);
 
     // 1. Handshake (Get Upload URL)
-    log("Step 1: Requesting Upload URL...");
+    log("Step 1: Requesting Upload URL via Netlify...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -31,12 +33,16 @@ export const processMeetingAudio = async (
       })
     });
 
+    log(`[DEBUG] Handshake Status: ${authResponse.status} ${authResponse.statusText}`);
+
     if (!authResponse.ok) {
         const err = await authResponse.text();
         throw new Error(`Handshake Failed: ${err}`);
     }
     const { uploadUrl } = await authResponse.json();
-    log("Step 1: Upload URL received.");
+    
+    if (!uploadUrl) throw new Error("Handshake succeeded but no uploadUrl returned.");
+    log(`[DEBUG] Handshake Success. URL received (len: ${uploadUrl.length}).`);
 
     // 2. Direct Upload (Browser -> Google) via XMLHttpRequest
     // STRATEGY: Single PUT request with Content-Range.
@@ -46,7 +52,9 @@ export const processMeetingAudio = async (
     log(`Step 2: Starting Direct Upload (XHR)...`);
     
     // Convert to ArrayBuffer to ensure clean transmission without browser auto-headers
+    log("[DEBUG] Converting Blob to ArrayBuffer...");
     const arrayBuffer = await audioBlob.arrayBuffer();
+    log(`[DEBUG] ArrayBuffer created. ByteLength: ${arrayBuffer.byteLength}`);
     
     let fileUri: string | null = null;
     let attempt = 0;
@@ -54,34 +62,57 @@ export const processMeetingAudio = async (
 
     while (attempt < 3 && !uploaded) {
         attempt++;
+        log(`[DEBUG] --- Upload Attempt ${attempt} ---`);
         try {
             const response = await new Promise<any>((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
+                
+                // Event Listeners for Debugging
+                xhr.addEventListener('loadstart', () => log(`[DEBUG] XHR: LoadStart`));
+                xhr.addEventListener('error', (e) => log(`[DEBUG] XHR: Error Event detected`));
+                xhr.addEventListener('abort', () => log(`[DEBUG] XHR: Abort`));
+                xhr.addEventListener('timeout', () => log(`[DEBUG] XHR: Timeout`));
+                
+                xhr.upload.addEventListener('loadstart', () => log(`[DEBUG] XHR Upload: LoadStart`));
+                xhr.upload.addEventListener('error', () => log(`[DEBUG] XHR Upload: Error`));
+                xhr.upload.addEventListener('progress', (e) => {
+                     if (e.lengthComputable) {
+                         const p = Math.floor((e.loaded / e.total) * 100);
+                         if (p % 10 === 0 || p === 100) {
+                             log(`[DEBUG] Upload Progress: ${p}% (${e.loaded}/${e.total})`);
+                         }
+                     }
+                });
+
+                xhr.onreadystatechange = () => {
+                     log(`[DEBUG] XHR State: ${xhr.readyState}, Status: ${xhr.status}`);
+                };
+
                 xhr.open('PUT', uploadUrl);
                 
                 // STANDARD HEADERS ONLY
                 // We avoid X-Goog-* headers here to prevent CORS preflight issues.
                 // Content-Range is standard and required for resumable sessions.
+                const rangeHeader = `bytes 0-${audioBlob.size - 1}/${audioBlob.size}`;
+                log(`[DEBUG] XHR Headers: Content-Type=${mimeType}`);
+                log(`[DEBUG] XHR Headers: Content-Range=${rangeHeader}`);
+                
                 xhr.setRequestHeader('Content-Type', mimeType);
-                xhr.setRequestHeader('Content-Range', `bytes 0-${audioBlob.size - 1}/${audioBlob.size}`);
-
-                xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable && e.total > 0) {
-                        const percent = ((e.loaded / e.total) * 100).toFixed(0);
-                        // Log every 20% to avoid spamming
-                        if (Number(percent) % 20 === 0 && Number(percent) !== 100) {
-                            log(`Uploading... ${percent}%`);
-                        }
-                    }
-                };
+                xhr.setRequestHeader('Content-Range', rangeHeader);
 
                 xhr.onload = () => {
+                    log(`[DEBUG] XHR OnLoad. Status: ${xhr.status}`);
+                    // Only log response text if small enough or error
+                    const responseSnippet = xhr.responseText.substring(0, 200);
+                    log(`[DEBUG] XHR Response: ${responseSnippet}...`);
+                    
                     if (xhr.status >= 200 && xhr.status < 300) {
                         try {
                             const json = JSON.parse(xhr.responseText);
                             resolve(json);
                         } catch (e) {
                             // Sometimes the response is empty or not JSON, but status is OK
+                            log("[DEBUG] Could not parse success JSON, assuming empty object.");
                             resolve({});
                         }
                     } else {
@@ -90,9 +121,11 @@ export const processMeetingAudio = async (
                 };
 
                 xhr.onerror = () => {
-                    reject(new Error("Network Error (XHR Failed)"));
+                    log(`[DEBUG] XHR OnError triggered. Status: ${xhr.status}`);
+                    reject(new Error(`Network Error (XHR status: ${xhr.status})`));
                 };
 
+                log(`[DEBUG] Sending ${arrayBuffer.byteLength} bytes...`);
                 xhr.send(arrayBuffer);
             });
 
@@ -101,13 +134,15 @@ export const processMeetingAudio = async (
                 fileUri = response.file.uri;
             } else {
                 // Should not happen with valid upload response
-                console.warn("Upload succeeded but no URI in response body:", response);
+                log("[DEBUG] Warning: Upload succeeded but no URI in response body.");
+                // Fallback: If we had the ID from handshake we could construct it, but we need the object from Google.
             }
             uploaded = true;
             log("Upload phase completed.");
 
         } catch (e: any) {
             console.error(`Upload attempt ${attempt} failed:`, e);
+            log(`[DEBUG] Exception in attempt ${attempt}: ${e.message}`);
             if (attempt >= 3) {
                 throw new Error(`Upload failed after 3 attempts. Last error: ${e.message}`);
             }
@@ -117,9 +152,6 @@ export const processMeetingAudio = async (
     }
     
     if (!fileUri) {
-         // Fallback: If the PUT response didn't contain the URI, we might need to 
-         // query the file state or assume the ID if we had it. 
-         // However, the Google GenAI File API always returns the file object on completion.
          throw new Error("File upload completed, but Google did not return a File URI.");
     }
 
