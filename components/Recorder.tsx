@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload, Terminal } from 'lucide-react';
+import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
 
@@ -17,7 +17,6 @@ interface RecorderProps {
   onFileUpload: (file: File) => void;
   audioUrl: string | null;
   debugLogs: string[];
-  onLog: (msg: string) => void;
 }
 
 type AudioSource = 'microphone' | 'system';
@@ -31,8 +30,7 @@ const Recorder: React.FC<RecorderProps> = ({
   onSaveAudio,
   onFileUpload,
   audioUrl, 
-  debugLogs,
-  onLog
+  debugLogs 
 }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -41,30 +39,20 @@ const Recorder: React.FC<RecorderProps> = ({
   const [isMobile, setIsMobile] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
-  const [showLogs, setShowLogs] = useState(false);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const logContainerRef = useRef<HTMLDivElement>(null);
   
   // Silent Audio Player Ref
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
-
-  // Auto-scroll logs
-  useEffect(() => {
-    if (logContainerRef.current) {
-        logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
-  }, [debugLogs, showLogs]);
 
   useEffect(() => {
     // @ts-ignore 
     if (!navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent)) {
         setIsMobile(true);
-        onLog("[Recorder] Mobile device detected (or DisplayMedia unsupported).");
     }
 
     // Create the silent audio element
@@ -112,11 +100,12 @@ const Recorder: React.FC<RecorderProps> = ({
   };
 
   const startRecording = async () => {
-    onLog(`[Recorder] Starting recording... Source: ${audioSource}`);
     try {
       // 1. Attempt Silent Loop Hack (Fail-safe)
+      // We wrap this in a separate try/catch so it doesn't block the main microphone access if it fails.
       if (silentAudioRef.current) {
           silentAudioRef.current.play().then(() => {
+             // 2. Update Media Session Metadata only if play succeeds
              if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: 'Meeting Recording',
@@ -126,7 +115,7 @@ const Recorder: React.FC<RecorderProps> = ({
                 navigator.mediaSession.playbackState = 'playing';
             }
           }).catch(err => {
-              onLog(`[Recorder] Silent audio hack warning: ${err}`);
+              console.warn("Silent audio hack failed (ignoring, proceeding with recording):", err);
           });
       }
 
@@ -134,7 +123,6 @@ const Recorder: React.FC<RecorderProps> = ({
 
       if (audioSource === 'system') {
         try {
-          onLog("[Recorder] Requesting DisplayMedia...");
           const displayStream = await navigator.mediaDevices.getDisplayMedia({ 
             video: true,
             audio: {
@@ -147,13 +135,11 @@ const Recorder: React.FC<RecorderProps> = ({
           const sysAudioTracks = displayStream.getAudioTracks();
           if (sysAudioTracks.length === 0) {
             alert("No audio shared! Please ensure you check the 'Share tab audio' box.");
-            onLog("[Recorder] Error: No audio track in system stream.");
             displayStream.getTracks().forEach(t => t.stop());
             if (silentAudioRef.current) silentAudioRef.current.pause();
             return;
           }
 
-          onLog("[Recorder] Requesting UserMedia (Mic)...");
           const micStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
                echoCancellation: true,
@@ -177,13 +163,11 @@ const Recorder: React.FC<RecorderProps> = ({
 
         } catch (err) {
           console.error("Error setting up mixed audio:", err);
-          onLog(`[Recorder] Error setting up mixed audio: ${err}`);
           if (silentAudioRef.current) silentAudioRef.current.pause();
           return; 
         }
       } else {
         // Standard Microphone Request
-        onLog("[Recorder] Requesting UserMedia (Mic only)...");
         finalStream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
             echoCancellation: false,
@@ -195,10 +179,7 @@ const Recorder: React.FC<RecorderProps> = ({
       }
       
       setStream(finalStream);
-      onLog(`[Recorder] Stream obtained. Tracks: ${finalStream.getTracks().length}`);
-
       const mimeType = getSupportedMimeType();
-      onLog(`[Recorder] Using MimeType: ${mimeType}`);
       
       const options: MediaRecorderOptions = {
         mimeType,
@@ -210,14 +191,9 @@ const Recorder: React.FC<RecorderProps> = ({
 
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
-          onLog(`[Recorder] Data available: ${e.data.size} bytes`);
           onChunkReady(e.data);
         }
       };
-      
-      mediaRecorder.onstart = () => onLog("[Recorder] MediaRecorder started.");
-      mediaRecorder.onstop = () => onLog("[Recorder] MediaRecorder stopped.");
-      mediaRecorder.onerror = (e) => onLog(`[Recorder] MediaRecorder Error: ${e}`);
 
       mediaRecorder.start(1000); 
       
@@ -231,14 +207,13 @@ const Recorder: React.FC<RecorderProps> = ({
 
     } catch (error) {
       console.error("Error accessing audio:", error);
-      onLog(`[Recorder] Error accessing audio: ${error}`);
       alert("Could not access audio device. Please check permissions.");
+      // Ensure silent audio stops if mic fails
       if (silentAudioRef.current) silentAudioRef.current.pause();
     }
   };
 
   const stopRecording = useCallback(() => {
-    onLog("[Recorder] Stopping recording...");
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       cleanupResources();
@@ -278,18 +253,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-        const file = e.target.files[0];
-        onLog(`[Recorder] File selected: ${file.name}`);
-        onLog(`[Recorder] Size: ${file.size} bytes, Type: ${file.type}`);
-        
-        try {
-            onFileUpload(file);
-        } catch (err) {
-            onLog(`[Recorder] Error handling file upload: ${err}`);
-            console.error(err);
-        }
-    } else {
-        onLog("[Recorder] File selection cancelled or empty.");
+        onFileUpload(e.target.files[0]);
     }
   };
 
@@ -322,7 +286,6 @@ const Recorder: React.FC<RecorderProps> = ({
     return log;
   };
 
-  // Processing State View
   if (isProcessing) {
     return (
       <div className="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-slate-100 p-8 flex flex-col items-center">
@@ -335,14 +298,15 @@ const Recorder: React.FC<RecorderProps> = ({
               <p className="text-slate-500 text-sm">Uploading & Analyzing...</p>
             </div>
          </div>
-         <div className="w-full bg-slate-900 text-slate-300 p-4 rounded-lg text-xs font-mono h-64 overflow-y-auto custom-scrollbar shadow-inner" ref={logContainerRef}>
-            {debugLogs.map((log, i) => (
-            <div key={i} className="border-b border-slate-800 last:border-0 py-1 break-words">
-                {renderLog(log)}
-            </div>
-            ))}
-            <div className="animate-pulse text-blue-400 mt-2">_</div>
-        </div>
+         {debugLogs.length > 0 && (
+           <div className="w-full bg-slate-900 text-slate-300 p-3 rounded-lg text-xs font-mono max-h-32 overflow-y-auto custom-scrollbar">
+              {debugLogs.map((log, i) => (
+                <div key={i} className="border-b border-slate-800 last:border-0 py-1">
+                  {renderLog(log)}
+                </div>
+              ))}
+           </div>
+         )}
       </div>
     );
   }
@@ -355,10 +319,7 @@ const Recorder: React.FC<RecorderProps> = ({
         <div className={`w-full mb-6 transition-opacity duration-300 ${isRecording ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
           <div className="flex bg-slate-100 p-1 rounded-lg w-full">
             <button
-              onClick={() => {
-                  setAudioSource('microphone');
-                  onLog("[Recorder] Switched to Microphone source");
-              }}
+              onClick={() => setAudioSource('microphone')}
               disabled={isRecording}
               className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
                 audioSource === 'microphone' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
@@ -368,10 +329,7 @@ const Recorder: React.FC<RecorderProps> = ({
               Microphone
             </button>
             <button
-              onClick={() => {
-                  setAudioSource('system');
-                  onLog("[Recorder] Switched to System Audio source");
-              }}
+              onClick={() => setAudioSource('system')}
               disabled={isRecording}
               className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
                 audioSource === 'system' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
@@ -381,12 +339,20 @@ const Recorder: React.FC<RecorderProps> = ({
               System + Mic
             </button>
           </div>
+          
+           <div className="mt-2 text-center">
+             {audioSource === 'microphone' ? (
+               <p className="text-xs text-slate-400">In-person meetings or Desktop Apps (Zoom/Teams) via speakers.</p>
+             ) : (
+               <p className="text-xs text-slate-400">Records Browser Tab/Window audio AND your microphone simultaneously.</p>
+             )}
+          </div>
         </div>
       )}
 
       {isMobile && !isRecording && (
          <div className="mb-6 text-center">
-           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized</span>
+           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized (Background Safe)</span>
          </div>
       )}
 
@@ -436,10 +402,7 @@ const Recorder: React.FC<RecorderProps> = ({
                     className="hidden" 
                 />
                 <button 
-                    onClick={() => {
-                        onLog("[Recorder] Upload button clicked");
-                        fileInputRef.current?.click();
-                    }}
+                    onClick={() => fileInputRef.current?.click()}
                     className="flex items-center gap-2 text-slate-500 hover:text-blue-600 text-sm font-medium transition-colors px-4 py-2 rounded-full hover:bg-blue-50"
                 >
                     <Upload className="w-4 h-4" />
@@ -504,29 +467,18 @@ const Recorder: React.FC<RecorderProps> = ({
             <Trash2 className="w-4 h-4" />
             Discard & Start Over
           </button>
-        </div>
-      )}
 
-      {/* Manual Toggle Log Viewer */}
-      <div className="mt-4 w-full">
-         <button 
-           onClick={() => setShowLogs(!showLogs)} 
-           className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1 mx-auto"
-         >
-           <Terminal className="w-3 h-3" />
-           {showLogs ? "Hide Logs" : "Show Debug Logs"}
-         </button>
-         
-         {showLogs && (
-            <div className="w-full mt-2 bg-slate-900 text-slate-400 p-3 rounded border border-slate-800 text-[10px] font-mono max-h-40 overflow-y-auto custom-scrollbar" ref={logContainerRef}>
-                {debugLogs.length === 0 ? <span className="text-slate-600">No logs yet...</span> : debugLogs.map((log, i) => (
-                  <div key={i} className="border-b border-slate-800 last:border-0 py-0.5 break-words">
+          {debugLogs.length > 0 && (
+             <div className="w-full mt-4 bg-slate-50 text-slate-400 p-2 rounded border border-slate-100 text-[10px] font-mono max-h-20 overflow-y-auto custom-scrollbar">
+                {debugLogs.map((log, i) => (
+                  <div key={i} className="border-b border-slate-200 last:border-0 py-0.5">
                     {renderLog(log)}
                   </div>
                 ))}
              </div>
-         )}
-      </div>
+           )}
+        </div>
+      )}
     </div>
   );
 };

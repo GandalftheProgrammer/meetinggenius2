@@ -14,154 +14,106 @@ export const processMeetingAudio = async (
   };
 
   try {
-    // Determine MIME type strictly from file extension if available
+    // Determine MIME type strictly from file extension if available (fixes slow Google indexing)
     const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
-    const fileSize = audioBlob.size.toString();
     
-    log(`[GeminiService] Init - Blob Size: ${fileSize} bytes`);
-    log(`[GeminiService] Init - Blob Type: ${audioBlob.type}`);
-    log(`[GeminiService] Init - Computed MimeType: ${mimeType}`);
+    log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
-    // 1. Handshake (Get Upload URL)
-    log("[GeminiService] Step 1: Requesting Upload URL via Netlify Proxy...");
+    // 1. Handshake (Get Upload URL via Backend to keep API Key safe)
+    log("Step 1: Requesting Upload URL...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
           action: 'authorize_upload', 
           mimeType, 
-          fileSize: fileSize
+          fileSize: audioBlob.size.toString() 
       })
     });
-
-    log(`[GeminiService] Handshake Response Status: ${authResponse.status} ${authResponse.statusText}`);
 
     if (!authResponse.ok) {
         const err = await authResponse.text();
         throw new Error(`Handshake Failed: ${err}`);
     }
     const { uploadUrl } = await authResponse.json();
-    
-    if (!uploadUrl) throw new Error("Handshake succeeded but no uploadUrl returned.");
-    log(`[GeminiService] Handshake Success. URL received.`);
-    
-    // Safety check on URL
-    if (!uploadUrl.startsWith('https://generativelanguage.googleapis.com')) {
-        log(`[GeminiService] WARNING: Suspicious Upload URL: ${uploadUrl.substring(0, 50)}...`);
-    }
+    log("Step 1: Upload URL received.");
 
-    // 2. Direct Upload (Browser -> Google) via XMLHttpRequest
-    // STRATEGY: Clean Monolithic PUT (Standard HTTP)
-    // We send the entire payload in one go.
-    // CRITICAL: We DO NOT send X-Goog headers or Content-Range. 
-    // The server knows the size from Step 1 and will finalize automatically when that many bytes are received.
-    
-    log(`[GeminiService] Step 2: Starting Direct Upload (XHR Clean PUT)...`);
-    
-    // Convert to ArrayBuffer to ensure clean transmission
-    log("[GeminiService] Converting Blob to ArrayBuffer...");
-    const arrayBuffer = await audioBlob.arrayBuffer();
-    log(`[GeminiService] ArrayBuffer created. ByteLength: ${arrayBuffer.byteLength}`);
-    
-    if (arrayBuffer.byteLength.toString() !== fileSize) {
-        log(`[GeminiService] FATAL MISMATCH: Handshake size (${fileSize}) != Actual buffer (${arrayBuffer.byteLength})`);
-        throw new Error("Buffer size mismatch. Upload would fail.");
-    }
-
+    // 2. Direct Upload (Browser -> Google)
+    // CRITICAL FIX: We use a 1GB chunk size to force the upload to happen in a SINGLE request.
+    // The previous chunking logic (8MB) caused stability issues on the final chunk for files > 8MB.
+    // By sending the whole file at once, we use the exact same logic that works for small files.
+    const CHUNK_SIZE = 1024 * 1024 * 1024; // 1GB limit
+    let offset = 0;
     let fileUri: string | null = null;
-    let attempt = 0;
-    let uploaded = false;
-
-    while (attempt < 3 && !uploaded) {
-        attempt++;
-        log(`[GeminiService] --- Upload Attempt ${attempt} ---`);
-        try {
-            const response = await new Promise<any>((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-                
-                // Detailed Event Listeners for Debugging
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                         const p = Math.floor((e.loaded / e.total) * 100);
-                         if (p % 20 === 0 || p === 100) log(`[XHR Progress] ${p}% (${e.loaded}/${e.total})`);
-                    }
-                });
-                xhr.addEventListener('error', () => log(`[XHR Event] error`));
-                xhr.addEventListener('abort', () => log(`[XHR Event] abort`));
-                xhr.addEventListener('timeout', () => log(`[XHR Event] timeout`));
-                xhr.addEventListener('load', () => log(`[XHR Event] load`));
-
-                xhr.open('PUT', uploadUrl);
-                
-                // CRITICAL HEADERS
-                // Must match handshake exactly.
-                xhr.setRequestHeader('Content-Type', mimeType);
-                
-                log(`[GeminiService] Request Config: PUT method, Content-Type: ${mimeType}`);
-                log(`[GeminiService] Sending ${arrayBuffer.byteLength} bytes...`);
-
-                xhr.onload = () => {
-                    log(`[XHR OnLoad] Status: ${xhr.status} ${xhr.statusText}`);
-                    
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        try {
-                            const responseText = xhr.responseText;
-                            log(`[XHR Response] Body len: ${responseText.length}`);
-                            const json = JSON.parse(responseText);
-                            resolve(json);
-                        } catch (e) {
-                            // Sometimes Google returns empty body but valid 200 OK
-                            log("[GeminiService] Could not parse JSON, checking headers...");
-                            resolve({});
-                        }
-                    } else {
-                        log(`[XHR Error Body] ${xhr.responseText}`);
-                        reject(new Error(`Server returned ${xhr.status}: ${xhr.statusText}`));
-                    }
-                };
-
-                xhr.onerror = () => {
-                    log(`[XHR OnError] Network Error. Status: ${xhr.status}`);
-                    reject(new Error(`Network Error (XHR status: ${xhr.status}). Likely CORS or Connection Reset.`));
-                };
-
-                xhr.send(arrayBuffer);
-            });
-
-            // Extract URI from response
-            if (response.file && response.file.uri) {
-                fileUri = response.file.uri;
-                log(`[GeminiService] Upload Complete. File URI: ${fileUri}`);
-            } else {
-                // If the response didn't contain the file object, we might need to query the state
-                // But usually the monolithic PUT returns the File resource.
-                log("[GeminiService] Upload finished but response missing 'file.uri'.");
-                log(`[GeminiService] Full Response: ${JSON.stringify(response)}`);
-                throw new Error("Google API did not return a File URI.");
-            }
-            uploaded = true;
-
-        } catch (e: any) {
-            console.error(`Upload attempt ${attempt} failed:`, e);
-            log(`[GeminiService] Exception in attempt ${attempt}: ${e.message}`);
-            if (attempt >= 3) {
-                throw new Error(`Upload failed after 3 attempts. Last error: ${e.message}`);
-            }
-            log(`[GeminiService] Retrying in 2s...`);
-            await new Promise(r => setTimeout(r, 2000));
-        }
-    }
     
-    if (!fileUri) {
-         throw new Error("File upload process completed without a valid File URI.");
+    log("Step 2: Starting Direct Upload...");
+    
+    while (offset < audioBlob.size) {
+        const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
+        const isLast = offset + chunkBlob.size >= audioBlob.size;
+        
+        // Use XHR for better reliability with binary uploads than fetch
+        // and to avoid "Failed to fetch" opacity
+        await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', uploadUrl, true);
+            
+            // Google Resumable Protocol Headers
+            // Note: We do NOT set Content-Length manually, the browser does it safely.
+            xhr.setRequestHeader('X-Goog-Upload-Offset', offset.toString());
+            xhr.setRequestHeader('X-Goog-Upload-Command', isLast ? 'upload, finalize' : 'upload');
+            
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = ((offset + e.loaded) / audioBlob.size) * 100;
+                    if (percent % 10 === 0 || percent > 90) {
+                        log(`Uploading... ${percent.toFixed(0)}%`);
+                    }
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    if (isLast) {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            if (result.file && result.file.uri) {
+                                fileUri = result.file.uri;
+                            } else if (result.uri) {
+                                fileUri = result.uri;
+                            } else {
+                                reject(new Error("Upload finalized but no File URI returned."));
+                                return;
+                            }
+                        } catch (e) {
+                            reject(new Error("Failed to parse upload response JSON"));
+                            return;
+                        }
+                    }
+                    resolve();
+                } else {
+                    reject(new Error(`Upload failed. Status: ${xhr.status} ${xhr.statusText}`));
+                }
+            };
+
+            xhr.onerror = () => reject(new Error(`Network Error during upload (Status ${xhr.status})`));
+            
+            xhr.send(chunkBlob);
+        });
+
+        offset += CHUNK_SIZE;
     }
+
+    if (!fileUri) throw new Error("File URI missing after upload.");
+    log(`File upload finalized. URI: ${fileUri}`);
 
     // 3. Start Background Job
-    log(`[GeminiService] Step 3: Queuing Background Job...`);
-    log(`[GeminiService] Model: ${model}`);
+    log(`Step 3: Queuing Background Job with model: ${model}...`);
     
+    // Generate a unique ID for this job
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
+    // Note: We call the background function endpoint
     const startResp = await fetch('/.netlify/functions/gemini-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -173,18 +125,19 @@ export const processMeetingAudio = async (
         throw new Error(`Failed to start background job: ${errorText}`);
     }
     
-    log(`[GeminiService] Job started with ID: ${jobId}. Polling for results...`);
+    log(`Job started with ID: ${jobId}. Waiting for results...`);
 
-    // 4. Poll for results
+    // 4. Poll for Results
     let attempts = 0;
-    const MAX_ATTEMPTS = 200; // 10 minutes max
+    const MAX_ATTEMPTS = 200; // 200 * 3s = 10 minutes max wait
     
     while (attempts < MAX_ATTEMPTS) {
         attempts++;
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 3000)); // Wait 3 seconds
         
+        // Log a "heartbeat" to the UI periodically
         if (attempts % 5 === 0) {
-            log(`[GeminiService] Polling (Attempt ${attempts})...`);
+            log(`Checking status (Attempt ${attempts})...`);
         }
 
         const pollResp = await fetch('/.netlify/functions/gemini', {
@@ -194,17 +147,20 @@ export const processMeetingAudio = async (
         });
 
         if (pollResp.status === 200) {
+            // Success!
             const data = await pollResp.json();
             if (data.status === 'COMPLETED' && data.result) {
-                log("[GeminiService] Job COMPLETED! Result received.");
+                log("Job Completed! Result received.");
                 return parseResponse(data.result, mode);
             } else if (data.status === 'ERROR') {
                 throw new Error(`Background Processing Error: ${data.error}`);
-            } else if (data.status === 'PROCESSING') {
-                // continue polling
             }
-        } else if (pollResp.status !== 404) {
-            log(`[GeminiService] Polling HTTP Error: ${pollResp.status} ${pollResp.statusText}`);
+            // If status is 'PROCESSING', continues loop
+        } else if (pollResp.status === 404) {
+             // Job ID not found yet (worker might be starting up), continue
+        } else {
+            // Actual network error
+            log(`Polling error: ${pollResp.statusText}`);
         }
     }
 
@@ -212,9 +168,6 @@ export const processMeetingAudio = async (
 
   } catch (error) {
     console.error("Error in SaaS flow:", error);
-    if (error instanceof Error) {
-        log(`[GeminiService] FATAL ERROR: ${error.message}`);
-    }
     throw error;
   }
 };

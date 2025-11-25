@@ -310,7 +310,6 @@ const App: React.FC = () => {
               onFileUpload={handleFileUpload}
               audioUrl={audioUrl}
               debugLogs={debugLogs}
-              onLog={addLog}
             />
           </div>
         )}
