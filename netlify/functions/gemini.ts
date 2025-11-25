@@ -57,15 +57,17 @@ export default async (req: Request) => {
       }
 
       const uploadUrl = initResponse.headers.get('x-goog-upload-url');
+      const granularity = initResponse.headers.get('x-goog-upload-chunk-granularity');
       
-      return new Response(JSON.stringify({ uploadUrl }), {
+      return new Response(JSON.stringify({ uploadUrl, granularity }), {
           headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    // --- ACTION 2: UPLOAD CHUNK ---
+    // --- ACTION 2: UPLOAD CHUNK (Proxy Fallback - Only for small files if needed) ---
+    // Note: Large files should now use Direct Upload from client to avoid Lambda limits
     if (action === 'upload_chunk') {
-      const { uploadUrl, chunkData, offset, totalSize, isLastChunk } = payload;
+      const { uploadUrl, chunkData, offset, isLastChunk } = payload;
       
       const buffer = Buffer.from(chunkData, 'base64');
       const chunkLength = buffer.length;

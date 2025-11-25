@@ -13,12 +13,12 @@ export const processMeetingAudio = async (
   };
 
   try {
-    // Determine MIME type strictly from file extension if available (fixes slow Google indexing)
+    // Determine MIME type strictly from file extension if available
     const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
     
     log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
-    // 1. Handshake (Get Upload URL via Backend to keep API Key safe)
+    // 1. Handshake (Get Upload URL + Granularity)
     log("Step 1: Requesting Upload URL...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
@@ -34,55 +34,56 @@ export const processMeetingAudio = async (
         const err = await authResponse.text();
         throw new Error(`Handshake Failed: ${err}`);
     }
-    const { uploadUrl } = await authResponse.json();
+    const { uploadUrl, granularity } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Proxied Chunk Upload (Browser -> Netlify -> Google)
-    // We use 3MB chunks to ensure Base64 payload (< 4.5MB) fits within Netlify/AWS Lambda 6MB limit.
-    // Google requires chunks to be multiples of 256KB (3MB = 12 * 256KB, so it's valid).
-    const CHUNK_SIZE = 3 * 1024 * 1024; 
+    // 2. Direct Chunk Upload (Browser -> Google)
+    // CRITICAL: We use Direct Upload because the API requires 8MB granularity which exceeds Netlify Function limits (6MB).
+    // We use ArrayBuffer to prevent the browser from adding a Content-Type header, which causes 'Failed to fetch' CORS errors.
+    
+    // Use granularity from server or default to 8MB (Standard for GenAI File API)
+    const CHUNK_SIZE = granularity ? parseInt(granularity) : 8 * 1024 * 1024;
+    
     let offset = 0;
     let fileUri: string | null = null;
     
-    log("Step 2: Starting Proxied Upload (3MB chunks)...");
+    log(`Step 2: Starting Direct Upload (${(CHUNK_SIZE / 1024 / 1024).toFixed(1)}MB chunks)...`);
     
-    // Loop through chunks
     while (offset < audioBlob.size) {
         const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
         const isLastChunk = offset + chunkBlob.size >= audioBlob.size;
         
         log(`Uploading chunk at offset ${(offset / 1024 / 1024).toFixed(2)}MB...${isLastChunk ? ' (Final)' : ''}`);
 
-        // Convert Blob to Base64 for JSON transport
-        const base64Data = await blobToBase64(chunkBlob);
+        // CRITICAL: Convert to ArrayBuffer to strip 'Content-Type' header. 
+        // Sending Blob directly adds 'audio/webm' which can trigger CORS failures on Signed URLs.
+        const chunkArrayBuffer = await chunkBlob.arrayBuffer();
 
         let attempt = 0;
         let uploaded = false;
 
-        // Retry loop for robustness
         while (attempt < 3 && !uploaded) {
             try {
                 attempt++;
                 
-                // Call the Proxy (Netlify Function) instead of Google directly
-                const chunkResp = await fetch('/.netlify/functions/gemini', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'upload_chunk',
-                        uploadUrl,
-                        chunkData: base64Data, // Base64 string
-                        offset: offset.toString(),
-                        isLastChunk
-                    })
+                // Direct Upload to Google
+                const chunkResp = await fetch(uploadUrl, {
+                    method: 'POST', // The Resumable API usually accepts POST or PUT. POST is generally safer for headers.
+                    headers: { 
+                        'X-Goog-Upload-Command': isLastChunk ? 'upload, finalize' : 'upload',
+                        'X-Goog-Upload-Offset': offset.toString()
+                        // Note: We intentionally do NOT set Content-Length (browser sets it) 
+                        // and do NOT set Content-Type (ArrayBuffer leaves it empty).
+                    },
+                    body: chunkArrayBuffer
                 });
                 
                 if (!chunkResp.ok) {
                      const err = await chunkResp.text();
-                     throw new Error(`Proxy Upload Failed [${chunkResp.status}]: ${err}`);
+                     throw new Error(`Upload Failed [${chunkResp.status}]: ${err}`);
                 }
                 
-                // If we finalized, we get the file URI in the response from the backend
+                // If finalized, extract the file info
                 if (isLastChunk) {
                     const result = await chunkResp.json();
                     if (result.file && result.file.uri) {
@@ -171,21 +172,6 @@ export const processMeetingAudio = async (
     throw error;
   }
 };
-
-// Helper to efficiently convert Blob to Base64
-async function blobToBase64(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-            const result = reader.result as string;
-            // Remove the data URL prefix (e.g. "data:audio/webm;base64,")
-            const base64 = result.split(',')[1];
-            resolve(base64);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-    });
-}
 
 function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
     if ('name' in blob) {
