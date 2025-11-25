@@ -19,7 +19,7 @@ export const processMeetingAudio = async (
     
     log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
-    // 1. Handshake (Get Upload URL + Granularity)
+    // 1. Handshake (Get Upload URL)
     log("Step 1: Requesting Upload URL...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
@@ -35,94 +35,76 @@ export const processMeetingAudio = async (
         const err = await authResponse.text();
         throw new Error(`Handshake Failed: ${err}`);
     }
-    const { uploadUrl, granularity } = await authResponse.json();
+    const { uploadUrl } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
     // 2. Direct Upload (Browser -> Google)
-    // STRATEGY: We want to upload in as few chunks as possible to avoid "last chunk" network errors.
-    // However, we MUST respect the granularity (usually 8MB) for any chunk that isn't the final one.
+    // STRATEGY: Standard HTTP PUT.
+    // We remove 'X-Goog-Upload-Command' headers because they trigger CORS preflight errors ('Failed to fetch')
+    // on the signed URL. Instead, we rely on the server automatically finalizing when it receives
+    // the total number of bytes declared in Step 1.
     
-    // Default granularity is 256KB if not specified, but Google usually mandates 8MB for large files.
-    const serverGranularity = granularity ? parseInt(granularity) : 256 * 1024;
+    log(`Step 2: Starting Direct Upload (Single Request)...`);
     
-    // Target a large chunk size (e.g., 64MB) to try and upload most files in ONE request.
-    // This effectively mimics "unchunked" uploads for files < 64MB, which is much more stable.
-    const TARGET_CHUNK_SIZE = 64 * 1024 * 1024; 
-    
-    // Adjust target to be a multiple of the server's granularity
-    const CHUNK_SIZE = Math.ceil(TARGET_CHUNK_SIZE / serverGranularity) * serverGranularity;
+    // Convert to ArrayBuffer to ensure clean transmission
+    const arrayBuffer = await audioBlob.arrayBuffer();
 
-    let offset = 0;
+    let attempt = 0;
+    let uploaded = false;
     let fileUri: string | null = null;
-    
-    log(`Step 2: Starting Direct Upload...`);
-    log(`Strategy: ${CHUNK_SIZE / 1024 / 1024}MB chunks (Granularity: ${serverGranularity / 1024 / 1024}MB)`);
-    
-    while (offset < audioBlob.size) {
-        // Calculate chunk boundaries
-        const sliceEnd = Math.min(offset + CHUNK_SIZE, audioBlob.size);
-        const chunkBlob = audioBlob.slice(offset, sliceEnd);
-        const isLastChunk = sliceEnd >= audioBlob.size;
-        
-        log(`Uploading chunk: ${(offset / 1024 / 1024).toFixed(2)}MB - ${(sliceEnd / 1024 / 1024).toFixed(2)}MB ${isLastChunk ? '(Final)' : ''}`);
 
-        // CRITICAL: Convert to ArrayBuffer to strip 'Content-Type' header. 
-        // Sending Blob directly adds 'audio/webm' which can trigger CORS failures on Signed URLs.
-        const chunkArrayBuffer = await chunkBlob.arrayBuffer();
-
-        let attempt = 0;
-        let uploaded = false;
-
-        while (attempt < 3 && !uploaded) {
-            try {
-                attempt++;
-                
-                // Using PUT is often more standard for binary payload uploads than POST
-                const chunkResp = await fetch(uploadUrl, {
-                    method: 'PUT', 
-                    headers: { 
-                        'X-Goog-Upload-Command': isLastChunk ? 'upload, finalize' : 'upload',
-                        'X-Goog-Upload-Offset': offset.toString()
-                    },
-                    body: chunkArrayBuffer
-                });
-                
-                if (!chunkResp.ok) {
-                     const err = await chunkResp.text();
-                     throw new Error(`Upload Failed [${chunkResp.status}]: ${err}`);
-                }
-                
-                // If finalized, extract the file info
-                if (isLastChunk) {
-                    const result = await chunkResp.json();
-                    if (result.file && result.file.uri) {
-                        fileUri = result.file.uri;
-                    } else if (result.uri) {
-                        fileUri = result.uri;
-                    } else {
-                        console.warn("Finalize response missing URI, checking body:", result);
-                        // Fallback: If JSON is returned but URI is missing, logging it might help debug
-                    }
-                }
-                
-                uploaded = true;
-
-            } catch (e: any) {
-                console.warn(`Upload attempt ${attempt} failed for offset ${offset}:`, e);
-                if (attempt >= 3) {
-                    throw new Error(`Failed to upload chunk at offset ${offset} after 3 attempts. Last error: ${e.message}`);
-                }
-                log(`Chunk upload failed (Attempt ${attempt}). Retrying in 2s...`);
-                await new Promise(r => setTimeout(r, 2000));
+    while (attempt < 3 && !uploaded) {
+        try {
+            attempt++;
+            
+            // NOTE: We do NOT use 'X-Goog-Upload-Command' here.
+            // We only send Content-Type. The server matches bytes received vs bytes expected.
+            const uploadResp = await fetch(uploadUrl, {
+                method: 'PUT', 
+                headers: { 
+                    'Content-Type': mimeType
+                },
+                body: arrayBuffer
+            });
+            
+            if (!uploadResp.ok) {
+                 const err = await uploadResp.text();
+                 throw new Error(`Upload Failed [${uploadResp.status}]: ${err}`);
             }
+            
+            // Extract file info from response
+            const result = await uploadResp.json();
+            if (result.file && result.file.uri) {
+                fileUri = result.file.uri;
+            } else if (result.uri) {
+                fileUri = result.uri;
+            } else {
+                console.warn("Upload successful but no URI returned immediately. This is expected for some endpoints.");
+                // Note: If the response is empty, we might need to query the file state, 
+                // but usually the Resumable API returns metadata on completion.
+            }
+            
+            uploaded = true;
+
+        } catch (e: any) {
+            console.warn(`Upload attempt ${attempt} failed:`, e);
+            if (attempt >= 3) {
+                throw new Error(`Failed to upload file after 3 attempts. Last error: ${e.message}`);
+            }
+            log(`Upload failed (Attempt ${attempt}). Retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
         }
-        
-        offset += CHUNK_SIZE;
     }
 
+    // Fallback: If URI wasn't returned in the PUT response, we can't proceed easily.
+    // However, usually the handshake doesn't return the URI, the final PUT does.
     if (!fileUri) {
-         throw new Error("Upload process completed but no File URI was returned from Google.");
+         // Attempt to construct URI if we can (rare fallback)
+         console.warn("No URI in upload response, checking context...");
+         // Often the response body is the File resource
     }
+    
+    if (!fileUri) throw new Error("File upload completed, but Google did not return a File URI.");
 
     log(`File upload finalized. URI: ${fileUri}`);
 
