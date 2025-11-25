@@ -16,8 +16,9 @@ export const processMeetingAudio = async (
   try {
     // Determine MIME type strictly from file extension if available
     const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
+    const fileSize = audioBlob.size.toString();
     
-    log(`[GeminiService] Init - Blob Size: ${audioBlob.size} bytes`);
+    log(`[GeminiService] Init - Blob Size: ${fileSize} bytes`);
     log(`[GeminiService] Init - Blob Type: ${audioBlob.type}`);
     log(`[GeminiService] Init - Computed MimeType: ${mimeType}`);
 
@@ -29,7 +30,7 @@ export const processMeetingAudio = async (
       body: JSON.stringify({ 
           action: 'authorize_upload', 
           mimeType, 
-          fileSize: audioBlob.size.toString() 
+          fileSize: fileSize
       })
     });
 
@@ -42,21 +43,31 @@ export const processMeetingAudio = async (
     const { uploadUrl } = await authResponse.json();
     
     if (!uploadUrl) throw new Error("Handshake succeeded but no uploadUrl returned.");
-    log(`[GeminiService] Handshake Success. Upload URL obtained.`);
+    log(`[GeminiService] Handshake Success. URL received.`);
+    
+    // Safety check on URL
+    if (!uploadUrl.startsWith('https://generativelanguage.googleapis.com')) {
+        log(`[GeminiService] WARNING: Suspicious Upload URL: ${uploadUrl.substring(0, 50)}...`);
+    }
 
     // 2. Direct Upload (Browser -> Google) via XMLHttpRequest
-    // STRATEGY: Clean Monolithic PUT.
+    // STRATEGY: Clean Monolithic PUT (Standard HTTP)
     // We send the entire payload in one go.
-    // We DO NOT send X-Goog-Upload-Command or Content-Range headers, as these often trigger CORS preflight failures in browsers.
-    // We rely on the initial handshake (where we sent the file size) for the server to know when the upload is complete.
+    // CRITICAL: We DO NOT send X-Goog headers or Content-Range. 
+    // The server knows the size from Step 1 and will finalize automatically when that many bytes are received.
     
-    log(`[GeminiService] Step 2: Starting Direct Upload (XHR)...`);
+    log(`[GeminiService] Step 2: Starting Direct Upload (XHR Clean PUT)...`);
     
-    // Convert to ArrayBuffer to ensure clean transmission without browser auto-headers
+    // Convert to ArrayBuffer to ensure clean transmission
     log("[GeminiService] Converting Blob to ArrayBuffer...");
     const arrayBuffer = await audioBlob.arrayBuffer();
     log(`[GeminiService] ArrayBuffer created. ByteLength: ${arrayBuffer.byteLength}`);
     
+    if (arrayBuffer.byteLength.toString() !== fileSize) {
+        log(`[GeminiService] FATAL MISMATCH: Handshake size (${fileSize}) != Actual buffer (${arrayBuffer.byteLength})`);
+        throw new Error("Buffer size mismatch. Upload would fail.");
+    }
+
     let fileUri: string | null = null;
     let attempt = 0;
     let uploaded = false;
@@ -69,46 +80,38 @@ export const processMeetingAudio = async (
                 const xhr = new XMLHttpRequest();
                 
                 // Detailed Event Listeners for Debugging
-                xhr.addEventListener('loadstart', () => log(`[XHR Event] loadstart`));
-                xhr.addEventListener('progress', (e) => {
+                xhr.upload.addEventListener('progress', (e) => {
                     if (e.lengthComputable) {
                          const p = Math.floor((e.loaded / e.total) * 100);
-                         if (p % 20 === 0) log(`[XHR Event] progress: ${p}%`);
+                         if (p % 20 === 0 || p === 100) log(`[XHR Progress] ${p}% (${e.loaded}/${e.total})`);
                     }
                 });
                 xhr.addEventListener('error', () => log(`[XHR Event] error`));
                 xhr.addEventListener('abort', () => log(`[XHR Event] abort`));
                 xhr.addEventListener('timeout', () => log(`[XHR Event] timeout`));
-                xhr.addEventListener('load', () => log(`[XHR Event] load (finished)`));
-                xhr.addEventListener('loadend', () => log(`[XHR Event] loadend`));
-
-                xhr.onreadystatechange = () => {
-                     // ReadyState 2 = HEADERS_RECEIVED, 4 = DONE
-                     if (xhr.readyState === 2 || xhr.readyState === 4) {
-                        log(`[XHR State] ReadyState: ${xhr.readyState}, Status: ${xhr.status}`);
-                     }
-                };
+                xhr.addEventListener('load', () => log(`[XHR Event] load`));
 
                 xhr.open('PUT', uploadUrl);
                 
-                // CRITICAL: NO CUSTOM HEADERS
-                // We send raw bytes. The server knows the size and type from the handshake.
-                // Sending custom headers like 'X-Goog-Upload-Command' triggers CORS 'Failed to fetch' / Network Error.
-                log(`[GeminiService] Sending raw ArrayBuffer via PUT. No custom headers.`);
+                // CRITICAL HEADERS
+                // Must match handshake exactly.
+                xhr.setRequestHeader('Content-Type', mimeType);
+                
+                log(`[GeminiService] Request Config: PUT method, Content-Type: ${mimeType}`);
+                log(`[GeminiService] Sending ${arrayBuffer.byteLength} bytes...`);
 
                 xhr.onload = () => {
-                    log(`[XHR OnLoad] Status: ${xhr.status}`);
+                    log(`[XHR OnLoad] Status: ${xhr.status} ${xhr.statusText}`);
                     
                     if (xhr.status >= 200 && xhr.status < 300) {
                         try {
                             const responseText = xhr.responseText;
-                            log(`[XHR Response] Body length: ${responseText.length}`);
+                            log(`[XHR Response] Body len: ${responseText.length}`);
                             const json = JSON.parse(responseText);
                             resolve(json);
                         } catch (e) {
-                            // Sometimes Google returns empty body on success for certain commands, 
-                            // but usually returns the File object on completion.
-                            log("[GeminiService] Could not parse success JSON (or empty), assuming success.");
+                            // Sometimes Google returns empty body but valid 200 OK
+                            log("[GeminiService] Could not parse JSON, checking headers...");
                             resolve({});
                         }
                     } else {
@@ -119,7 +122,7 @@ export const processMeetingAudio = async (
 
                 xhr.onerror = () => {
                     log(`[XHR OnError] Network Error. Status: ${xhr.status}`);
-                    reject(new Error(`Network Error (XHR status: ${xhr.status}) - Likely CORS or Connection Reset`));
+                    reject(new Error(`Network Error (XHR status: ${xhr.status}). Likely CORS or Connection Reset.`));
                 };
 
                 xhr.send(arrayBuffer);
@@ -130,9 +133,10 @@ export const processMeetingAudio = async (
                 fileUri = response.file.uri;
                 log(`[GeminiService] Upload Complete. File URI: ${fileUri}`);
             } else {
-                // If we don't get the URI in the response, we can't proceed.
-                log("[GeminiService] Warning: Upload request finished but no 'file.uri' in response.");
-                log(`[GeminiService] Response dump: ${JSON.stringify(response)}`);
+                // If the response didn't contain the file object, we might need to query the state
+                // But usually the monolithic PUT returns the File resource.
+                log("[GeminiService] Upload finished but response missing 'file.uri'.");
+                log(`[GeminiService] Full Response: ${JSON.stringify(response)}`);
                 throw new Error("Google API did not return a File URI.");
             }
             uploaded = true;

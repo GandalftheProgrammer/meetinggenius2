@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload } from 'lucide-react';
+import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload, Terminal } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
 
@@ -41,15 +41,24 @@ const Recorder: React.FC<RecorderProps> = ({
   const [isMobile, setIsMobile] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
   
   // Silent Audio Player Ref
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logContainerRef.current) {
+        logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [debugLogs, showLogs]);
 
   useEffect(() => {
     // @ts-ignore 
@@ -313,6 +322,7 @@ const Recorder: React.FC<RecorderProps> = ({
     return log;
   };
 
+  // Processing State View
   if (isProcessing) {
     return (
       <div className="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-slate-100 p-8 flex flex-col items-center">
@@ -325,15 +335,14 @@ const Recorder: React.FC<RecorderProps> = ({
               <p className="text-slate-500 text-sm">Uploading & Analyzing...</p>
             </div>
          </div>
-         {debugLogs.length > 0 && (
-           <div className="w-full bg-slate-900 text-slate-300 p-3 rounded-lg text-xs font-mono max-h-32 overflow-y-auto custom-scrollbar">
-              {debugLogs.map((log, i) => (
-                <div key={i} className="border-b border-slate-800 last:border-0 py-1">
-                  {renderLog(log)}
-                </div>
-              ))}
-           </div>
-         )}
+         <div className="w-full bg-slate-900 text-slate-300 p-4 rounded-lg text-xs font-mono h-64 overflow-y-auto custom-scrollbar shadow-inner" ref={logContainerRef}>
+            {debugLogs.map((log, i) => (
+            <div key={i} className="border-b border-slate-800 last:border-0 py-1 break-words">
+                {renderLog(log)}
+            </div>
+            ))}
+            <div className="animate-pulse text-blue-400 mt-2">_</div>
+        </div>
       </div>
     );
   }
@@ -372,20 +381,12 @@ const Recorder: React.FC<RecorderProps> = ({
               System + Mic
             </button>
           </div>
-          
-           <div className="mt-2 text-center">
-             {audioSource === 'microphone' ? (
-               <p className="text-xs text-slate-400">In-person meetings or Desktop Apps (Zoom/Teams) via speakers.</p>
-             ) : (
-               <p className="text-xs text-slate-400">Records Browser Tab/Window audio AND your microphone simultaneously.</p>
-             )}
-          </div>
         </div>
       )}
 
       {isMobile && !isRecording && (
          <div className="mb-6 text-center">
-           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized (Background Safe)</span>
+           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized</span>
          </div>
       )}
 
@@ -503,18 +504,29 @@ const Recorder: React.FC<RecorderProps> = ({
             <Trash2 className="w-4 h-4" />
             Discard & Start Over
           </button>
+        </div>
+      )}
 
-          {debugLogs.length > 0 && (
-             <div className="w-full mt-4 bg-slate-50 text-slate-400 p-2 rounded border border-slate-100 text-[10px] font-mono max-h-20 overflow-y-auto custom-scrollbar">
-                {debugLogs.map((log, i) => (
-                  <div key={i} className="border-b border-slate-200 last:border-0 py-0.5">
+      {/* Manual Toggle Log Viewer */}
+      <div className="mt-4 w-full">
+         <button 
+           onClick={() => setShowLogs(!showLogs)} 
+           className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1 mx-auto"
+         >
+           <Terminal className="w-3 h-3" />
+           {showLogs ? "Hide Logs" : "Show Debug Logs"}
+         </button>
+         
+         {showLogs && (
+            <div className="w-full mt-2 bg-slate-900 text-slate-400 p-3 rounded border border-slate-800 text-[10px] font-mono max-h-40 overflow-y-auto custom-scrollbar" ref={logContainerRef}>
+                {debugLogs.length === 0 ? <span className="text-slate-600">No logs yet...</span> : debugLogs.map((log, i) => (
+                  <div key={i} className="border-b border-slate-800 last:border-0 py-0.5 break-words">
                     {renderLog(log)}
                   </div>
                 ))}
              </div>
-           )}
-        </div>
-      )}
+         )}
+      </div>
     </div>
   );
 };
