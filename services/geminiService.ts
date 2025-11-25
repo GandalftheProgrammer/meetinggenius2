@@ -18,7 +18,7 @@ export const processMeetingAudio = async (
     
     log(`Starting Async SaaS Flow. Blob size: ${(audioBlob.size / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
-    // 1. Handshake (Get Upload URL via Backend to keep API Key safe)
+    // 1. Handshake
     log("Step 1: Requesting Upload URL...");
     const authResponse = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
@@ -37,38 +37,36 @@ export const processMeetingAudio = async (
     const { uploadUrl } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Direct Chunk Upload (Browser -> Google)
-    // We use 8MB chunks because Google API requires multiples of 256KB, 
-    // but the error message specifically requested 8MB granularity.
-    // Also, direct upload bypasses Netlify's 6MB payload limit.
-    const CHUNK_SIZE = 8 * 1024 * 1024; 
+    // 2. Chunk Upload
+    const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks
     let offset = 0;
     let fileUri: string | null = null;
     
-    log("Step 2: Starting Direct Upload (8MB chunks)...");
+    log("Step 2: Starting Chunked Upload...");
     
     while (offset < audioBlob.size) {
         const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
+        const chunkBase64 = await blobToBase64(chunkBlob);
         const isLast = offset + chunkBlob.size >= audioBlob.size;
         
-        log(`Uploading chunk offset ${(offset / 1024 / 1024).toFixed(2)}MB...`);
+        log(`Uploading chunk offset ${offset}...`);
 
-        // Send raw binary data directly to Google
-        const command = isLast ? 'upload, finalize' : 'upload';
-        
-        const chunkResp = await fetch(uploadUrl, {
+        const chunkResp = await fetch('/.netlify/functions/gemini', {
             method: 'POST',
-            headers: {
-                'Content-Length': chunkBlob.size.toString(),
-                'X-Goog-Upload-Offset': offset.toString(),
-                'X-Goog-Upload-Command': command,
-            },
-            body: chunkBlob // Send blob directly, no JSON/Base64 overhead
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'upload_chunk',
+                uploadUrl,
+                chunkData: chunkBase64,
+                offset: offset.toString(),
+                totalSize: audioBlob.size.toString(),
+                isLastChunk: isLast
+            })
         });
         
         if (!chunkResp.ok) {
              const err = await chunkResp.text();
-             throw new Error(`Direct Chunk Upload Failed: ${err}`);
+             throw new Error(`Chunk Upload Failed: ${err}`);
         }
         
         if (isLast) {
@@ -76,10 +74,7 @@ export const processMeetingAudio = async (
             if (result.file && result.file.uri) {
                 fileUri = result.file.uri;
             } else {
-                // Sometimes the file object is nested or just returned as the body
-                // Check if result itself is the file object
-                if (result.uri) fileUri = result.uri;
-                else throw new Error("Upload finalized but no File URI returned from Google.");
+                throw new Error("Upload finalized but no File URI returned from Google.");
             }
         }
         offset += CHUNK_SIZE;
