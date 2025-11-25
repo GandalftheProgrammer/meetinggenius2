@@ -1,3 +1,4 @@
+
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
 export const processMeetingAudio = async (
@@ -37,23 +38,33 @@ export const processMeetingAudio = async (
     const { uploadUrl, granularity } = await authResponse.json();
     log("Step 1: Upload URL received.");
 
-    // 2. Direct Chunk Upload (Browser -> Google)
-    // CRITICAL: We use Direct Upload because the API requires 8MB granularity which exceeds Netlify Function limits (6MB).
-    // We use ArrayBuffer to prevent the browser from adding a Content-Type header, which causes 'Failed to fetch' CORS errors.
+    // 2. Direct Upload (Browser -> Google)
+    // STRATEGY: We want to upload in as few chunks as possible to avoid "last chunk" network errors.
+    // However, we MUST respect the granularity (usually 8MB) for any chunk that isn't the final one.
     
-    // Use granularity from server or default to 8MB (Standard for GenAI File API)
-    const CHUNK_SIZE = granularity ? parseInt(granularity) : 8 * 1024 * 1024;
+    // Default granularity is 256KB if not specified, but Google usually mandates 8MB for large files.
+    const serverGranularity = granularity ? parseInt(granularity) : 256 * 1024;
     
+    // Target a large chunk size (e.g., 64MB) to try and upload most files in ONE request.
+    // This effectively mimics "unchunked" uploads for files < 64MB, which is much more stable.
+    const TARGET_CHUNK_SIZE = 64 * 1024 * 1024; 
+    
+    // Adjust target to be a multiple of the server's granularity
+    const CHUNK_SIZE = Math.ceil(TARGET_CHUNK_SIZE / serverGranularity) * serverGranularity;
+
     let offset = 0;
     let fileUri: string | null = null;
     
-    log(`Step 2: Starting Direct Upload (${(CHUNK_SIZE / 1024 / 1024).toFixed(1)}MB chunks)...`);
+    log(`Step 2: Starting Direct Upload...`);
+    log(`Strategy: ${CHUNK_SIZE / 1024 / 1024}MB chunks (Granularity: ${serverGranularity / 1024 / 1024}MB)`);
     
     while (offset < audioBlob.size) {
-        const chunkBlob = audioBlob.slice(offset, offset + CHUNK_SIZE);
-        const isLastChunk = offset + chunkBlob.size >= audioBlob.size;
+        // Calculate chunk boundaries
+        const sliceEnd = Math.min(offset + CHUNK_SIZE, audioBlob.size);
+        const chunkBlob = audioBlob.slice(offset, sliceEnd);
+        const isLastChunk = sliceEnd >= audioBlob.size;
         
-        log(`Uploading chunk at offset ${(offset / 1024 / 1024).toFixed(2)}MB...${isLastChunk ? ' (Final)' : ''}`);
+        log(`Uploading chunk: ${(offset / 1024 / 1024).toFixed(2)}MB - ${(sliceEnd / 1024 / 1024).toFixed(2)}MB ${isLastChunk ? '(Final)' : ''}`);
 
         // CRITICAL: Convert to ArrayBuffer to strip 'Content-Type' header. 
         // Sending Blob directly adds 'audio/webm' which can trigger CORS failures on Signed URLs.
@@ -66,14 +77,12 @@ export const processMeetingAudio = async (
             try {
                 attempt++;
                 
-                // Direct Upload to Google
+                // Using PUT is often more standard for binary payload uploads than POST
                 const chunkResp = await fetch(uploadUrl, {
-                    method: 'POST', // The Resumable API usually accepts POST or PUT. POST is generally safer for headers.
+                    method: 'PUT', 
                     headers: { 
                         'X-Goog-Upload-Command': isLastChunk ? 'upload, finalize' : 'upload',
                         'X-Goog-Upload-Offset': offset.toString()
-                        // Note: We intentionally do NOT set Content-Length (browser sets it) 
-                        // and do NOT set Content-Type (ArrayBuffer leaves it empty).
                     },
                     body: chunkArrayBuffer
                 });
@@ -92,6 +101,7 @@ export const processMeetingAudio = async (
                         fileUri = result.uri;
                     } else {
                         console.warn("Finalize response missing URI, checking body:", result);
+                        // Fallback: If JSON is returned but URI is missing, logging it might help debug
                     }
                 }
                 
