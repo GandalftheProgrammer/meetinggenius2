@@ -122,6 +122,12 @@ export const processMeetingAudio = async (
                          if (jsonError.error && jsonError.error.message) {
                              errMsg = `${jsonError.error.message} (Code: ${jsonError.error.code})`;
                          }
+                    } else if (errMsg.trim().startsWith('<')) {
+                        // Detect HTML error page (common with 401/403/500 from Google LBs)
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(errMsg, 'text/html');
+                        const title = doc.querySelector('title')?.innerText || "HTML Error Page";
+                        errMsg = `Received HTML Error: ${title}. Check Key restrictions.`;
                     }
                 } catch (e) {
                     // Keep original errMsg if parse fails

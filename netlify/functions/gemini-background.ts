@@ -1,14 +1,13 @@
-import { GoogleGenAI } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 import { Buffer } from "node:buffer";
 
 // NETLIFY BACKGROUND FUNCTION
-// Reads chunks from storage, stitches them to 8MB, uploads to Gemini, and processes.
+// Reads chunks from storage, stitches them to 8MB, uploads to Gemini via REST API, and processes.
 
 export default async (req: Request) => {
   if (req.method !== 'POST') return new Response("OK");
 
-  // FIX: Trim whitespace from API Key. Trailing newlines cause 401s in raw fetch calls.
+  // FIX: Trim whitespace from API Key.
   // FIX: Remove any surrounding quotes if they exist in the env var string
   let apiKey = process.env.API_KEY ? process.env.API_KEY.trim() : "";
   if (apiKey.startsWith('"') && apiKey.endsWith('"')) {
@@ -44,20 +43,28 @@ export default async (req: Request) => {
         console.log(`[Background] ${msg}`);
     };
 
-    // --- 0. PRE-FLIGHT CONNECTIVITY TEST ---
-    // This verifies if the API Key works in this server environment (checking for Referrer/IP restrictions)
+    // --- 0. PRE-FLIGHT CONNECTIVITY TEST (RAW REST) ---
+    // Verifies if the API Key works in this server environment (checking for Referrer/IP restrictions)
     await updateStatus("Checkpoint 0: Validating API Key Permissions...");
     try {
-        const testAi = new GoogleGenAI({ apiKey });
-        // Simple fast test
-        await testAi.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: 'ping',
+        const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodedKey}`;
+        const testResp = await fetch(testUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: "ping" }] }]
+            })
         });
-        console.log("[Background] API Key is valid and working.");
+
+        if (!testResp.ok) {
+            const status = testResp.status;
+            const errText = await testResp.text();
+            throw new Error(`Test Failed (${status}): ${errText}`);
+        }
+        console.log("[Background] API Key is valid and working via REST.");
     } catch (testErr: any) {
         console.error(`[Background] API Key Validation Failed: ${testErr.message}`);
-        throw new Error(`API Key Rejected by Google in Server Environment (Code: 401). CAUSE: Likely 'HTTP Referrer' restrictions in Google Cloud Console. Server requests have no referrer. FIX: Remove restrictions or use a separate Server Key.`);
+        throw new Error(`API Key Rejected by Google in Server Environment. Code: 401/403. CAUSE: Likely 'HTTP Referrer' restrictions in Google Cloud Console. Server requests have no referrer. FIX: Remove restrictions or use a separate Server Key.`);
     }
 
     // --- 1. INITIALIZE GEMINI UPLOAD ---
@@ -73,8 +80,7 @@ export default async (req: Request) => {
             'X-Goog-Upload-Command': 'start',
             'X-Goog-Upload-Header-Content-Length': String(fileSize),
             'X-Goog-Upload-Header-Content-Type': mimeType,
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey // Redundant Auth Header
+            'Content-Type': 'application/json'
         },
         body: JSON.stringify({ file: { display_name: `Meeting_${jobId}` } })
     });
@@ -129,7 +135,6 @@ export default async (req: Request) => {
                     'Content-Length': String(GEMINI_CHUNK_SIZE),
                     'X-Goog-Upload-Command': 'upload',
                     'X-Goog-Upload-Offset': String(uploadOffset),
-                    'x-goog-api-key': apiKey, // Redundant Auth Header
                     'Content-Type': 'application/octet-stream' // Required for binary data
                 },
                 body: chunkToSend
@@ -156,7 +161,6 @@ export default async (req: Request) => {
             'Content-Length': String(finalSize),
             'X-Goog-Upload-Command': 'upload, finalize',
             'X-Goog-Upload-Offset': String(uploadOffset),
-            'x-goog-api-key': apiKey, // Redundant Auth Header
             'Content-Type': 'application/octet-stream'
         },
         body: buffer
@@ -172,13 +176,13 @@ export default async (req: Request) => {
     
     console.log(`[Background] File Uploaded Successfully: ${fileUri}`);
 
-    // --- 4. WAIT FOR ACTIVE ---
+    // --- 4. WAIT FOR ACTIVE (RAW REST) ---
     await updateStatus("Checkpoint 4: Waiting for File Processing...");
     await waitForFileActive(fileUri, encodedKey);
 
-    // --- 5. GENERATE CONTENT ---
+    // --- 5. GENERATE CONTENT (RAW REST) ---
     await updateStatus("Checkpoint 5: Generating Content...");
-    const resultText = await generateContent(fileUri, mimeType, mode, model, apiKey);
+    const resultText = await generateContentREST(fileUri, mimeType, mode, model, encodedKey);
 
     // Save Result
     await resultStore.setJSON(jobId, { status: 'COMPLETED', result: resultText });
@@ -211,17 +215,21 @@ export default async (req: Request) => {
 
 async function waitForFileActive(fileUri: string, encodedKey: string) {
     let attempts = 0;
+    // fileUri is full URL like https://generativelanguage.googleapis.com/v1beta/files/abc
+    // We just need to append the key
+    const pollUrl = `${fileUri}?key=${encodedKey}`;
+
     while (attempts < 60) {
-        // Appending key is crucial here too
-        const r = await fetch(`${fileUri}?key=${encodedKey}`);
+        const r = await fetch(pollUrl);
         
         if (!r.ok) {
              if (r.status === 404) throw new Error("File not found during polling");
              // Retry on temporary errors
         } else {
             const d = await r.json();
-            if (d.state === 'ACTIVE') return;
-            if (d.state === 'FAILED') throw new Error(`File processing failed state: ${d.state}`);
+            const state = d.state || d.file?.state;
+            if (state === 'ACTIVE') return;
+            if (state === 'FAILED') throw new Error(`File processing failed state: ${state}`);
         }
         
         await new Promise(r => setTimeout(r, 2000));
@@ -230,38 +238,52 @@ async function waitForFileActive(fileUri: string, encodedKey: string) {
     throw new Error("Timeout waiting for file to become ACTIVE");
 }
 
-async function generateContent(fileUri: string, mimeType: string, mode: string, model: string, apiKey: string) {
-    try {
-        const ai = new GoogleGenAI({ apiKey });
+async function generateContentREST(fileUri: string, mimeType: string, mode: string, model: string, encodedKey: string) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodedKey}`;
 
-        const systemInstruction = `You are an expert meeting secretary.
-        1. Detect the language and write notes in that language.
-        2. If silent/noise, return fallback JSON.
-        3. Action items must be EXPLICIT tasks only.
-        `;
+    const systemInstruction = `You are an expert meeting secretary.
+    1. Detect the language and write notes in that language.
+    2. If silent/noise, return fallback JSON.
+    3. Action items must be EXPLICIT tasks only.
+    `;
 
-        let taskInstruction = "";
-        if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe verbatim.";
-        else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
-        else taskInstruction = "Transcribe verbatim AND create structured notes.";
+    let taskInstruction = "";
+    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe verbatim.";
+    else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
+    else taskInstruction = "Transcribe verbatim AND create structured notes.";
 
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: {
+    // Note: REST API uses snake_case for keys
+    const payload = {
+        contents: [
+            {
                 parts: [
-                    { fileData: { fileUri, mimeType } },
+                    { file_data: { file_uri: fileUri, mime_type: mimeType } },
                     { text: taskInstruction + "\n\nReturn JSON." }
                 ]
-            },
-            config: {
-                systemInstruction: systemInstruction,
-                responseMimeType: "application/json",
-                maxOutputTokens: 8192
             }
-        });
+        ],
+        system_instruction: {
+            parts: [{ text: systemInstruction }]
+        },
+        generation_config: {
+            response_mime_type: "application/json",
+            max_output_tokens: 8192
+        }
+    };
 
-        return response.text || "{}";
-    } catch (error: any) {
-        throw new Error(`Gemini Generation Failed: ${error.message || error}`);
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`Generation Failed (${resp.status}): ${errText}`);
     }
+
+    const data = await resp.json();
+    // REST API response structure
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text || "{}";
 }
