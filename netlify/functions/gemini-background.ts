@@ -1,4 +1,3 @@
-
 import { GoogleGenAI } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 import { Buffer } from "node:buffer";
@@ -9,7 +8,9 @@ import { Buffer } from "node:buffer";
 export default async (req: Request) => {
   if (req.method !== 'POST') return new Response("OK");
 
-  const apiKey = process.env.API_KEY;
+  // FIX: Trim whitespace from API Key. Trailing newlines cause 401s in raw fetch calls.
+  const apiKey = process.env.API_KEY ? process.env.API_KEY.trim() : "";
+  
   if (!apiKey) {
       console.error("API_KEY missing");
       return;
@@ -28,14 +29,18 @@ export default async (req: Request) => {
 
     // Results Store
     const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
-    await resultStore.setJSON(jobId, { status: 'PROCESSING' });
-
     // Uploads Store
     const uploadStore = getStore({ name: "meeting-uploads", consistency: "strong" });
 
+    // Helper to update status
+    const updateStatus = async (msg: string) => {
+        console.log(`[Background] ${msg}`);
+        // We only update the store if needed, mostly we just log to console which Netlify captures
+    };
+
     // --- 1. INITIALIZE GEMINI UPLOAD ---
-    // We use raw fetch here because we are implementing a specific chunk stitching logic 
-    // to bypass Netlify Function payload limits.
+    await updateStatus("Checkpoint 1: Initializing Resumable Upload...");
+    
     const initResp = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
         method: 'POST',
         headers: {
@@ -48,14 +53,16 @@ export default async (req: Request) => {
         body: JSON.stringify({ file: { display_name: `Meeting_${jobId}` } })
     });
 
-    if (!initResp.ok) throw new Error(`Init Failed: ${await initResp.text()}`);
+    if (!initResp.ok) {
+        const errText = await initResp.text();
+        throw new Error(`Init Handshake Failed (${initResp.status}): ${errText}`);
+    }
     
     const uploadUrl = initResp.headers.get('x-goog-upload-url');
-    if (!uploadUrl) throw new Error("No upload URL returned");
+    if (!uploadUrl) throw new Error("No upload URL returned from Google");
 
     // --- 2. STITCH & UPLOAD CHUNKS ---
-    // Gemini requires chunks to be multiples of 8MB (8388608 bytes).
-    // Our storage chunks are 4MB. We must stitch them.
+    await updateStatus("Checkpoint 2: Stitching and Uploading Chunks...");
     
     const GEMINI_CHUNK_SIZE = 8 * 1024 * 1024;
     let buffer = Buffer.alloc(0);
@@ -64,15 +71,16 @@ export default async (req: Request) => {
     for (let i = 0; i < totalChunks; i++) {
         // Read Chunk from Storage
         const chunkKey = `${jobId}/${i}`;
-        const chunkBase64 = await uploadStore.get(chunkKey);
+        // Explicitly cast to string because get() can return Blob/ArrayBuffer which Buffer.from doesn't accept with encoding
+        const chunkBase64 = await uploadStore.get(chunkKey) as string;
         
-        if (!chunkBase64) throw new Error(`Missing chunk ${i}`);
+        if (!chunkBase64) throw new Error(`Missing chunk ${i} in storage`);
         
         // Append to buffer
         const chunkBuffer = Buffer.from(chunkBase64, 'base64');
         buffer = Buffer.concat([buffer, chunkBuffer]);
 
-        // Clean up storage immediately to free space
+        // Clean up storage immediately
         await uploadStore.delete(chunkKey);
 
         // While we have enough data for a Gemini chunk, send it
@@ -92,18 +100,21 @@ export default async (req: Request) => {
                 body: chunkToSend
             });
 
-            if (!upResp.ok) throw new Error(`Upload Failed at ${uploadOffset}: ${await upResp.text()}`);
+            if (!upResp.ok) {
+                 const errText = await upResp.text();
+                 throw new Error(`Chunk Upload Failed at ${uploadOffset} (${upResp.status}): ${errText}`);
+            }
             
             uploadOffset += GEMINI_CHUNK_SIZE;
         }
     }
 
     // --- 3. FINALIZE ---
-    // Send remainder (if any) with 'finalize' command
+    await updateStatus("Checkpoint 3: Finalizing Upload...");
+    
     const isFinal = true;
     const finalSize = buffer.length;
-    console.log(`[Background] Finalizing with ${finalSize} bytes at offset ${uploadOffset}...`);
-
+    
     const finalResp = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
@@ -114,26 +125,41 @@ export default async (req: Request) => {
         body: buffer
     });
 
-    if (!finalResp.ok) throw new Error(`Finalize Failed: ${await finalResp.text()}`);
+    if (!finalResp.ok) {
+        const errText = await finalResp.text();
+        throw new Error(`Finalize Failed (${finalResp.status}): ${errText}`);
+    }
 
     const fileResult = await finalResp.json();
     const fileUri = fileResult.file?.uri || fileResult.uri;
     
-    console.log(`[Background] Upload Complete. File URI: ${fileUri}`);
+    console.log(`[Background] File Uploaded Successfully: ${fileUri}`);
 
     // --- 4. WAIT FOR ACTIVE ---
+    await updateStatus("Checkpoint 4: Waiting for File Processing...");
     await waitForFileActive(fileUri, apiKey);
 
     // --- 5. GENERATE CONTENT ---
+    await updateStatus("Checkpoint 5: Generating Content...");
     const resultText = await generateContent(fileUri, mimeType, mode, model, apiKey);
 
     // Save Result
     await resultStore.setJSON(jobId, { status: 'COMPLETED', result: resultText });
+    console.log(`[Background] Job ${jobId} Completed Successfully.`);
 
   } catch (err: any) {
-    console.error(`[Background] Error: ${err.message}`);
+    console.error(`[Background] FATAL ERROR: ${err.message}`);
+    // Extract meaningful message if it's a JSON string
+    let errorMessage = err.message;
+    try {
+        if (errorMessage.startsWith('{')) {
+            const jsonErr = JSON.parse(errorMessage);
+            errorMessage = jsonErr.error?.message || errorMessage;
+        }
+    } catch (e) {}
+
     const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
-    await resultStore.setJSON(jobId, { status: 'ERROR', error: err.message });
+    await resultStore.setJSON(jobId, { status: 'ERROR', error: errorMessage });
   }
 };
 
@@ -141,43 +167,56 @@ async function waitForFileActive(fileUri: string, apiKey: string) {
     let attempts = 0;
     while (attempts < 60) {
         const r = await fetch(`${fileUri}?key=${apiKey}`);
-        const d = await r.json();
-        if (d.state === 'ACTIVE') return;
-        if (d.state === 'FAILED') throw new Error("File processing failed");
+        
+        if (!r.ok) {
+             // Handle 404 or other errors during polling
+             if (r.status === 404) throw new Error("File not found during polling");
+             // Retry on temporary errors
+        } else {
+            const d = await r.json();
+            if (d.state === 'ACTIVE') return;
+            if (d.state === 'FAILED') throw new Error(`File processing failed state: ${d.state}`);
+        }
+        
         await new Promise(r => setTimeout(r, 2000));
         attempts++;
     }
-    throw new Error("Timeout waiting for file");
+    throw new Error("Timeout waiting for file to become ACTIVE");
 }
 
 async function generateContent(fileUri: string, mimeType: string, mode: string, model: string, apiKey: string) {
-    const ai = new GoogleGenAI({ apiKey });
+    try {
+        const ai = new GoogleGenAI({ apiKey });
 
-    const systemInstruction = `You are an expert meeting secretary.
-    1. Detect the language and write notes in that language.
-    2. If silent/noise, return fallback JSON.
-    3. Action items must be EXPLICIT tasks only.
-    `;
+        const systemInstruction = `You are an expert meeting secretary.
+        1. Detect the language and write notes in that language.
+        2. If silent/noise, return fallback JSON.
+        3. Action items must be EXPLICIT tasks only.
+        `;
 
-    let taskInstruction = "";
-    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe verbatim.";
-    else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
-    else taskInstruction = "Transcribe verbatim AND create structured notes.";
+        let taskInstruction = "";
+        if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe verbatim.";
+        else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
+        else taskInstruction = "Transcribe verbatim AND create structured notes.";
 
-    const response = await ai.models.generateContent({
-        model: model,
-        contents: {
-            parts: [
-                { fileData: { fileUri, mimeType } },
-                { text: taskInstruction + "\n\nReturn JSON." }
-            ]
-        },
-        config: {
-            systemInstruction: systemInstruction,
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192
-        }
-    });
+        const response = await ai.models.generateContent({
+            model: model,
+            contents: {
+                parts: [
+                    { fileData: { fileUri, mimeType } },
+                    { text: taskInstruction + "\n\nReturn JSON." }
+                ]
+            },
+            config: {
+                systemInstruction: systemInstruction,
+                responseMimeType: "application/json",
+                maxOutputTokens: 8192
+            }
+        });
 
-    return response.text || "{}";
+        return response.text || "{}";
+    } catch (error: any) {
+        // Extract inner message from GoogleGenAIError
+        throw new Error(`Gemini Generation Failed: ${error.message || error}`);
+    }
 }

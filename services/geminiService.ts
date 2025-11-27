@@ -114,7 +114,16 @@ export const processMeetingAudio = async (
                 return parseResponse(data.result, mode);
             } 
             else if (data.status === 'ERROR') {
-                throw new Error(`Processing Error: ${data.error}`);
+                // Try to make the error message cleaner
+                let errMsg = data.error;
+                try {
+                    const jsonError = JSON.parse(errMsg);
+                    if (jsonError.error && jsonError.error.message) {
+                        errMsg = `API Error: ${jsonError.error.message} (Code: ${jsonError.error.code})`;
+                    }
+                } catch (e) {}
+                
+                throw new Error(`Processing Error: ${errMsg}`);
             }
             // If PROCESSING, continue loop
         }
