@@ -156,7 +156,8 @@ export default async (req: Request) => {
 
   } catch (err: any) {
     console.error(`[Background] FATAL ERROR: ${err.message}`);
-    // Extract meaningful message if it's a JSON string
+    
+    // 1. Clean up Error Message
     let errorMessage = err.message;
     try {
         if (errorMessage.startsWith('{')) {
@@ -165,8 +166,16 @@ export default async (req: Request) => {
         }
     } catch (e) {}
 
+    // 2. Add API Key Debug Info
+    const keyDebug = apiKey && apiKey.length > 10 
+        ? `[API Key: ${apiKey.slice(0, 4)}...${apiKey.slice(-4)}, Len: ${apiKey.length}]`
+        : `[API Key: Invalid/Missing]`;
+
+    // 3. Construct Final User Message
+    const finalError = `${errorMessage}. ${keyDebug}. NOTE: If this is 401, check Google Console > API Keys > Application Restrictions. Server-side requests are blocked by "HTTP Referrer" restrictions.`;
+
     const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
-    await resultStore.setJSON(jobId, { status: 'ERROR', error: errorMessage });
+    await resultStore.setJSON(jobId, { status: 'ERROR', error: finalError });
   }
 };
 
