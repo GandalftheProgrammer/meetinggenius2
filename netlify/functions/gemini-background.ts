@@ -72,7 +72,7 @@ export default async (req: Request) => {
         // Read Chunk from Storage
         const chunkKey = `${jobId}/${i}`;
         // Explicitly cast to string because get() can return Blob/ArrayBuffer which Buffer.from doesn't accept with encoding
-        const chunkBase64 = await uploadStore.get(chunkKey) as string;
+        const chunkBase64 = await uploadStore.get(chunkKey) as unknown as string;
         
         if (!chunkBase64) throw new Error(`Missing chunk ${i} in storage`);
         
@@ -95,7 +95,8 @@ export default async (req: Request) => {
                 headers: {
                     'Content-Length': String(GEMINI_CHUNK_SIZE),
                     'X-Goog-Upload-Command': 'upload',
-                    'X-Goog-Upload-Offset': String(uploadOffset)
+                    'X-Goog-Upload-Offset': String(uploadOffset),
+                    'x-goog-api-key': apiKey // CRITICAL FIX: Add API Key header
                 },
                 body: chunkToSend
             });
@@ -120,7 +121,8 @@ export default async (req: Request) => {
         headers: {
             'Content-Length': String(finalSize),
             'X-Goog-Upload-Command': 'upload, finalize',
-            'X-Goog-Upload-Offset': String(uploadOffset)
+            'X-Goog-Upload-Offset': String(uploadOffset),
+            'x-goog-api-key': apiKey // CRITICAL FIX: Add API Key header
         },
         body: buffer
     });
@@ -166,7 +168,11 @@ export default async (req: Request) => {
 async function waitForFileActive(fileUri: string, apiKey: string) {
     let attempts = 0;
     while (attempts < 60) {
-        const r = await fetch(`${fileUri}?key=${apiKey}`);
+        // fileUri is a standard REST resource, so query param ?key= works here,
+        // but adding header ensures robustness.
+        const r = await fetch(`${fileUri}?key=${apiKey}`, {
+            headers: { 'x-goog-api-key': apiKey }
+        });
         
         if (!r.ok) {
              // Handle 404 or other errors during polling

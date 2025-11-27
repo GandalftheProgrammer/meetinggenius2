@@ -119,7 +119,7 @@ export const processMeetingAudio = async (
                 try {
                     const jsonError = JSON.parse(errMsg);
                     if (jsonError.error && jsonError.error.message) {
-                        errMsg = `API Error: ${jsonError.error.message} (Code: ${jsonError.error.code})`;
+                        errMsg = `${jsonError.error.message} (Code: ${jsonError.error.code})`;
                     }
                 } catch (e) {}
                 
