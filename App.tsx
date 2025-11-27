@@ -137,7 +137,7 @@ const App: React.FC = () => {
   const saveAudioBackup = async (blob: Blob, currentTitle: string) => {
     if (!isDriveConnected) return;
     // Replace non-alphanumeric chars with underscore to ensure valid filename
-    const safeTitle = currentTitle.replace(/[^a-z0-9]/gi, '_');
+    const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
     try {
         addLog("Backing up audio to Drive (/Audio)...");
         const result = await uploadAudioToDrive(safeTitle, blob);
@@ -156,15 +156,13 @@ const App: React.FC = () => {
       if (!isDriveConnected) {
           // Try to connect if user clicks save but isn't connected
           handleConnectDrive();
-          // We can't immediately save because auth is async popup, user has to click again
           return; 
       }
       
       let currentTitle = title.trim();
       if (!currentTitle) {
-          // If no title, use "Meeting Date Time"
-          const now = new Date();
-          currentTitle = `Meeting ${now.toLocaleDateString()} ${now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+           const now = getFormattedDateTime();
+           currentTitle = `Meeting ${now}`;
       }
       
       await saveAudioBackup(combinedBlob, currentTitle);
@@ -174,7 +172,7 @@ const App: React.FC = () => {
   const saveResultsToDrive = async (data: MeetingData, currentTitle: string) => {
     if (!isDriveConnected) return;
     
-    const safeTitle = currentTitle.replace(/[^a-z0-9]/gi, '_');
+    const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
     
     try {
         addLog("Saving results to Google Drive...");
@@ -199,14 +197,34 @@ const App: React.FC = () => {
     }
   };
 
+  const getFormattedDateTime = () => {
+      const now = new Date();
+      // Format: 25 November 2025
+      const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+      // Format: 14:11:00
+      const timePart = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      return `${datePart} at ${timePart}`;
+  };
+
   const handleProcessAudio = async (mode: ProcessingMode) => {
     if (!combinedBlob) return;
 
+    // Apply strict date formatting to the title
+    const timestamp = getFormattedDateTime();
     let currentTitle = title.trim();
+    
     if (!currentTitle) {
-      currentTitle = `Meeting ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-      setTitle(currentTitle);
+      // Auto Title
+      currentTitle = `Meeting ${timestamp}`;
+    } else {
+      // Manual Title - Append timestamp if not present (simple check) to ensure uniqueness/context as requested
+      if (!currentTitle.includes(timestamp)) {
+          currentTitle = `${currentTitle} - ${timestamp}`;
+      }
     }
+    
+    // Update state to reflect the enhanced title
+    setTitle(currentTitle);
 
     // Visual state updates
     if (appState === AppState.COMPLETED) {

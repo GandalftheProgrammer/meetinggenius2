@@ -190,44 +190,55 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     let actionItems: string[] = [];
     let isError = false;
 
-    // Attempt to parse JSON
+    // Pre-cleaning: Remove markdown code blocks
+    const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+
     try {
-        const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const firstBrace = cleanText.indexOf('{');
-        const lastBrace = cleanText.lastIndexOf('}');
+        const rawData = JSON.parse(cleanText);
         
-        if (firstBrace !== -1 && lastBrace !== -1) {
-            const jsonOnly = cleanText.substring(firstBrace, lastBrace + 1);
-            const rawData = JSON.parse(jsonOnly);
-            
-            transcription = rawData.transcription || "";
-            summary = rawData.summary || "";
-            conclusions = rawData.conclusions || rawData.decisions || [];
-            actionItems = rawData.actionItems || [];
-        } else {
-            // Not a JSON object, might be raw text or empty
-            if (!cleanText) {
-                // Empty string returned
-                isError = false; 
-            } else {
-                throw new Error("Not JSON");
-            }
-        }
+        transcription = rawData.transcription || "";
+        summary = rawData.summary || "";
+        conclusions = rawData.conclusions || rawData.decisions || [];
+        actionItems = rawData.actionItems || [];
+
     } catch (e) {
-        // Fallback Logic based on requested Mode
+        // JSON Parsing Failed (likely due to cut-off text or formatting issues)
         isError = true;
-        if (mode === 'TRANSCRIPT_ONLY') {
-            // If we only asked for a transcript, assume the raw text IS the transcript
-            transcription = jsonText;
-            summary = ""; // Explicitly empty
-            isError = false; // Recovered
-        } else if (mode === 'NOTES_ONLY') {
-            summary = jsonText;
-            transcription = "";
-            isError = false; // Recovered
-        } else {
-            // ALL mode failed to parse JSON
-            transcription = jsonText;
+
+        // Fallback: Regex Extraction
+        // Tries to extract content inside "key": "value", handling escaped quotes
+        const extractField = (key: string) => {
+             // Look for "key": "
+             // Then capture everything until the next " that is NOT preceded by a \ (escaped)
+             const regex = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`, 's');
+             const match = cleanText.match(regex);
+             return match ? match[1].replace(/\\"/g, '"').replace(/\\n/g, '\n') : null;
+        };
+
+        const regexTrans = extractField('transcription');
+        const regexSum = extractField('summary');
+
+        if (regexTrans) transcription = regexTrans;
+        if (regexSum) summary = regexSum;
+
+        // Final Fallback: If Regex failed and we are in single-mode, assumes raw text might be the content
+        if (!transcription && !summary) {
+            if (mode === 'TRANSCRIPT_ONLY') {
+                // If it looks like JSON wrapper but failed parsing, strip the wrapper
+                if (cleanText.trim().startsWith('{')) {
+                     // Remove opening { "transcription": " (flexible whitespace)
+                     let text = cleanText.replace(/^\s*{\s*"transcription"\s*:\s*"/, '');
+                     // Remove trailing "} or "
+                     text = text.replace(/"\s*}\s*$/, '').replace(/"\s*$/, '');
+                     transcription = text;
+                } else {
+                     transcription = cleanText;
+                }
+                isError = false; 
+            } else if (mode === 'NOTES_ONLY') {
+                summary = cleanText;
+                isError = false; 
+            }
         }
     }
 
@@ -240,11 +251,6 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         transcription = "";
     }
     
-    // Only set error message if we couldn't recover and expected summary
-    if (isError && mode !== 'TRANSCRIPT_ONLY' && !summary) {
-        summary = "Error parsing structured notes.";
-    }
-
     return {
         transcription,
         summary,
