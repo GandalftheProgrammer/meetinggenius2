@@ -1,52 +1,16 @@
-
-import { Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { getStore } from "@netlify/blobs";
+import { Buffer } from "node:buffer";
 
 // NETLIFY BACKGROUND FUNCTION
-// This function runs for up to 15 minutes.
-// It receives the request, returns 202 immediately, then continues running.
-
-const waitForFileActive = async (fileUri: string, apiKey: string) => {
-    console.log(`[Background] Checking state for ${fileUri}...`);
-    let attempts = 0;
-    const maxAttempts = 180; // Increased to 15 minutes max (180 * 5s)
-
-    while (attempts < maxAttempts) {
-        try {
-            const response = await fetch(`${fileUri}?key=${apiKey}`);
-            if (!response.ok) throw new Error(`Failed to fetch file status: ${response.statusText}`);
-            
-            const data = await response.json();
-            
-            if (data.state === "ACTIVE") {
-                console.log(`[Background] File ${fileUri} is ACTIVE (Attempt ${attempts}).`);
-                return;
-            }
-            
-            if (data.state === "FAILED") {
-                throw new Error("File processing failed on Google side.");
-            }
-
-            console.log(`[Background] File state is ${data.state}, waiting 5s...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            attempts++;
-        } catch (e) {
-            console.warn(`[Background] Error checking file state: ${e}`);
-            // Wait and retry even on network error, unless max attempts reached
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            attempts++;
-        }
-    }
-    throw new Error(`Timeout waiting for file to become ACTIVE. Attempts: ${attempts}`);
-};
+// Reads chunks from storage, stitches them to 8MB, uploads to Gemini, and processes.
 
 export default async (req: Request) => {
-  // If this is a preflight or non-POST, ignore
   if (req.method !== 'POST') return new Response("OK");
 
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
-      console.error("API_KEY missing in background function");
+      console.error("API_KEY missing");
       return;
   }
 
@@ -54,201 +18,166 @@ export default async (req: Request) => {
 
   try {
     const payload = await req.json();
-    const { fileUri, mimeType, mode, model } = payload;
+    const { totalChunks, mimeType, mode, model, fileSize } = payload;
     jobId = payload.jobId;
 
-    if (!jobId || !fileUri) {
-        console.error("Missing jobId or fileUri in background payload");
-        return;
-    }
+    if (!jobId) return;
 
-    // Use selected model or fallback to 3-pro-preview
-    const initialModel = model || "gemini-3-pro-preview";
+    console.log(`[Background] Starting job ${jobId}. Chunks: ${totalChunks}. Size: ${fileSize}`);
 
-    console.log(`[Background] Starting job ${jobId} for file ${fileUri} using model ${initialModel}`);
+    // Results Store
+    const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
+    await resultStore.setJSON(jobId, { status: 'PROCESSING' });
 
-    // Initialize Store
-    const store = getStore({ name: "meeting-results", consistency: "strong" });
+    // Uploads Store
+    const uploadStore = getStore({ name: "meeting-uploads", consistency: "strong" });
 
-    // Mark as started
-    await store.setJSON(jobId, { status: 'PROCESSING' });
+    // --- 1. INITIALIZE GEMINI UPLOAD ---
+    // We use raw fetch here because we are implementing a specific chunk stitching logic 
+    // to bypass Netlify Function payload limits, which might be hard to replicate 
+    // with standard SDK file managers that expect local files.
+    const initResp = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+            'X-Goog-Upload-Protocol': 'resumable',
+            'X-Goog-Upload-Command': 'start',
+            'X-Goog-Upload-Header-Content-Length': String(fileSize),
+            'X-Goog-Upload-Header-Content-Type': mimeType,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ file: { display_name: `Meeting_${jobId}` } })
+    });
 
-    // --- WAIT FOR FILE PROCESSING ---
-    try {
-        await waitForFileActive(fileUri, apiKey);
-    } catch (fileError: any) {
-        console.error(`[Background] File Error: ${fileError.message}`);
-        await store.setJSON(jobId, { status: 'ERROR', error: `File Processing Error: ${fileError.message}` });
-        return;
-    }
-
-    // --- CONSTRUCT PROMPT ---
-      let systemInstruction = `
-        You are an expert professional meeting secretary. 
-        Listen to the attached audio recording of a meeting.
-        
-        CRITICAL INSTRUCTION - SILENCE DETECTION:
-        Before processing, verify if there is intelligible speech in the audio.
-        - If the audio is silent or just noise, output the FALLBACK JSON.
-        
-        CRITICAL INSTRUCTION - LANGUAGE DETECTION:
-        1. Detect the dominant language spoken in the audio.
-        2. You MUST write the "summary", "conclusions", and "actionItems" in that EXACT SAME LANGUAGE.
-        
-        CRITICAL INSTRUCTION - ACCURACY & HALLUCINATIONS:
-        
-        1. **CONCLUSIONS & INSIGHTS (Flexible):** 
-           - For the "conclusions" section, you are allowed to be intelligent.
-           - Identify key decisions, consensus reached, and overarching insights.
-           - You may synthesize implied conclusions even if they weren't stated as a formal "motion".
-           - Focus on the *outcome* of discussions.
-
-        2. **ACTION ITEMS (STRICT & LITERAL):** 
-           - For the "actionItems" section, you must be EXTREMELY STRICT.
-           - **NO INVENTIONS:** Do not create tasks that "make sense" but weren't said.
-           - **EXPLICIT ONLY:** Only list an action item if someone proposed it or agreed to it explicitly (e.g., "I will do X", "Let's check Y").
-           - **LITERAL PHRASING:** Use the literal wording of the task as much as possible. Do not interpret "We should probably think about marketing" as "Action: Create full marketing plan". Instead write: "Action: Consider thinking about marketing".
-           - **PROPOSALS:** If something is proposed but not confirmed, list it as "Proposed: [Task]".
-        
-        FALLBACK JSON (Only if silence):
-        {
-            "transcription": "[No intelligible speech detected]",
-            "summary": "No conversation was detected in the audio recording.",
-            "conclusions": [],
-            "actionItems": []
-        }
-      `;
-
-      let taskInstruction = "";
-      const transcriptionSchema = { type: Type.STRING, description: "Full verbatim transcription" };
-      const summarySchema = { type: Type.STRING, description: "A concise summary" };
-      
-      // Changed from decisions to conclusions
-      const conclusionsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Key conclusions, decisions, and insights from the meeting" };
-      const actionItemsSchema = { type: Type.ARRAY, items: { type: Type.STRING }, description: "Strictly explicitly agreed tasks or proposals" };
-
-      let schemaProperties: any = {};
-      let requiredFields: string[] = [];
-
-      if (mode === 'TRANSCRIPT_ONLY') {
-        taskInstruction = "Your task is to Transcribe the audio verbatim. Do not generate summary or notes.";
-        schemaProperties = { transcription: transcriptionSchema };
-        requiredFields = ["transcription"];
-      } else if (mode === 'NOTES_ONLY') {
-        taskInstruction = "Your task is to create structured meeting notes.";
-        schemaProperties = { summary: summarySchema, conclusions: conclusionsSchema, actionItems: actionItemsSchema };
-        requiredFields = ["summary", "conclusions", "actionItems"];
-      } else {
-        taskInstruction = "Your task is to Transcribe the audio verbatim AND create structured meeting notes.";
-        schemaProperties = { transcription: transcriptionSchema, summary: summarySchema, conclusions: conclusionsSchema, actionItems: actionItemsSchema };
-        requiredFields = ["transcription", "summary", "conclusions", "actionItems"];
-      }
-
-      const requestBody = {
-        contents: [
-           { 
-             parts: [
-               { fileData: { fileUri: fileUri, mimeType: mimeType } },
-               { text: systemInstruction + "\n\n" + taskInstruction + "\n\nReturn the output strictly in JSON format." }
-             ]
-           }
-        ],
-        generationConfig: {
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192, // INCREASED TO PREVENT TRUNCATION
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: schemaProperties,
-                required: requiredFields,
-            },
-        }
-      };
-
-    // --- CALL GOOGLE WITH RETRY & FALLBACK ---
+    if (!initResp.ok) throw new Error(`Init Failed: ${await initResp.text()}`);
     
-    // Helper to call API
-    const callGemini = async (modelName: string) => {
-        return fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, 
-            {
+    const uploadUrl = initResp.headers.get('x-goog-upload-url');
+    if (!uploadUrl) throw new Error("No upload URL returned");
+
+    // --- 2. STITCH & UPLOAD CHUNKS ---
+    // Gemini requires chunks to be multiples of 8MB (8388608 bytes).
+    // Our storage chunks are 4MB. We must stitch them.
+    
+    const GEMINI_CHUNK_SIZE = 8 * 1024 * 1024;
+    let buffer = Buffer.alloc(0);
+    let uploadOffset = 0;
+
+    for (let i = 0; i < totalChunks; i++) {
+        // Read Chunk from Storage
+        const chunkKey = `${jobId}/${i}`;
+        const chunkBase64 = await uploadStore.get(chunkKey);
+        
+        if (!chunkBase64) throw new Error(`Missing chunk ${i}`);
+        
+        // Append to buffer
+        const chunkBuffer = Buffer.from(chunkBase64, 'base64');
+        buffer = Buffer.concat([buffer, chunkBuffer]);
+
+        // Clean up storage immediately to free space
+        await uploadStore.delete(chunkKey);
+
+        // While we have enough data for a Gemini chunk, send it
+        while (buffer.length >= GEMINI_CHUNK_SIZE) {
+            const chunkToSend = buffer.subarray(0, GEMINI_CHUNK_SIZE);
+            buffer = buffer.subarray(GEMINI_CHUNK_SIZE); // Keep remainder
+
+            console.log(`[Background] Uploading 8MB chunk at offset ${uploadOffset}...`);
+            
+            const upResp = await fetch(uploadUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-            }
-        );
-    };
+                headers: {
+                    'Content-Length': String(GEMINI_CHUNK_SIZE),
+                    'X-Goog-Upload-Command': 'upload',
+                    'X-Goog-Upload-Offset': String(uploadOffset)
+                },
+                body: chunkToSend
+            });
 
-    let response;
-    let success = false;
-    let usedModel = initialModel;
-    const FALLBACK_MODEL = "gemini-2.5-flash";
-
-    // Attempt 1: Selected Model
-    console.log(`[Background] Attempt 1 with ${usedModel}...`);
-    response = await callGemini(usedModel);
-
-    // Retry Logic for 503
-    if (response.status === 503) {
-        console.warn(`[Background] 503 Overloaded on ${usedModel}. Waiting 5s...`);
-        await new Promise(r => setTimeout(r, 5000));
-        
-        // Attempt 2: Selected Model
-        console.log(`[Background] Attempt 2 with ${usedModel}...`);
-        response = await callGemini(usedModel);
+            if (!upResp.ok) throw new Error(`Upload Failed at ${uploadOffset}: ${await upResp.text()}`);
+            
+            uploadOffset += GEMINI_CHUNK_SIZE;
+        }
     }
 
-    if (response.status === 503) {
-        console.warn(`[Background] 503 Overloaded again. Waiting 10s...`);
-        await new Promise(r => setTimeout(r, 10000));
+    // --- 3. FINALIZE ---
+    // Send remainder (if any) with 'finalize' command
+    const isFinal = true;
+    const finalSize = buffer.length;
+    console.log(`[Background] Finalizing with ${finalSize} bytes at offset ${uploadOffset}...`);
 
-        // Attempt 3: Selected Model
-        console.log(`[Background] Attempt 3 with ${usedModel}...`);
-        response = await callGemini(usedModel);
-    }
+    const finalResp = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Length': String(finalSize),
+            'X-Goog-Upload-Command': 'upload, finalize',
+            'X-Goog-Upload-Offset': String(uploadOffset)
+        },
+        body: buffer
+    });
 
-    // Fallback Logic
-    if (response.status === 503) {
-        console.warn(`[Background] Selected model ${usedModel} still overloaded. Switching to fallback: ${FALLBACK_MODEL}`);
-        usedModel = FALLBACK_MODEL;
-        // Attempt 4: Fallback Model
-        response = await callGemini(usedModel);
-    }
+    if (!finalResp.ok) throw new Error(`Finalize Failed: ${await finalResp.text()}`);
 
-    if (!response.ok) {
-        const err = await response.text();
-        console.error(`[Background] Gemini Error (${usedModel}): ${err}`);
-        await store.setJSON(jobId, { status: 'ERROR', error: `Gemini API Error (${usedModel}): ${err}` });
-        return;
-    }
-
-    const jsonResponse = await response.json();
+    const fileResult = await finalResp.json();
+    const fileUri = fileResult.file?.uri || fileResult.uri;
     
-    // Extract text from the candidate
-    let fullText = "";
-    if (jsonResponse.candidates && 
-        jsonResponse.candidates[0] && 
-        jsonResponse.candidates[0].content && 
-        jsonResponse.candidates[0].content.parts) {
-        
-        jsonResponse.candidates[0].content.parts.forEach((part: any) => {
-            if (part.text) fullText += part.text;
-        });
-    }
+    console.log(`[Background] Upload Complete. File URI: ${fileUri}`);
 
-    if (!fullText) {
-        await store.setJSON(jobId, { status: 'ERROR', error: "Model returned empty response" });
-        return;
-    }
+    // --- 4. WAIT FOR ACTIVE ---
+    await waitForFileActive(fileUri, apiKey);
 
-    // --- SUCCESS: SAVE TO BLOB ---
-    console.log(`[Background] Job ${jobId} success with ${usedModel}. Saving to blob.`);
-    await store.setJSON(jobId, { status: 'COMPLETED', result: fullText });
+    // --- 5. GENERATE CONTENT ---
+    const resultText = await generateContent(fileUri, mimeType, mode, model, apiKey);
+
+    // Save Result
+    await resultStore.setJSON(jobId, { status: 'COMPLETED', result: resultText });
 
   } catch (err: any) {
-    console.error(`[Background] Crash in job ${jobId}:`, err);
-    if (jobId) {
-        const store = getStore({ name: "meeting-results", consistency: "strong" });
-        await store.setJSON(jobId, { status: 'ERROR', error: err.message });
-    }
+    console.error(`[Background] Error: ${err.message}`);
+    const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
+    await resultStore.setJSON(jobId, { status: 'ERROR', error: err.message });
   }
 };
+
+async function waitForFileActive(fileUri: string, apiKey: string) {
+    let attempts = 0;
+    while (attempts < 60) {
+        const r = await fetch(`${fileUri}?key=${apiKey}`);
+        const d = await r.json();
+        if (d.state === 'ACTIVE') return;
+        if (d.state === 'FAILED') throw new Error("File processing failed");
+        await new Promise(r => setTimeout(r, 2000));
+        attempts++;
+    }
+    throw new Error("Timeout waiting for file");
+}
+
+async function generateContent(fileUri: string, mimeType: string, mode: string, model: string, apiKey: string) {
+    const ai = new GoogleGenAI({ apiKey });
+
+    const systemInstruction = `You are an expert meeting secretary.
+    1. Detect the language and write notes in that language.
+    2. If silent/noise, return fallback JSON.
+    3. Action items must be EXPLICIT tasks only.
+    `;
+
+    let taskInstruction = "";
+    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe verbatim.";
+    else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
+    else taskInstruction = "Transcribe verbatim AND create structured notes.";
+
+    const response = await ai.models.generateContent({
+        model: model,
+        contents: {
+            parts: [
+                { fileData: { fileUri, mimeType } },
+                { text: taskInstruction + "\n\nReturn JSON." }
+            ]
+        },
+        config: {
+            systemInstruction: systemInstruction,
+            responseMimeType: "application/json",
+            maxOutputTokens: 8192
+        }
+    });
+
+    return response.text || "{}";
+}

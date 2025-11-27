@@ -1,5 +1,6 @@
 
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
+import { Buffer } from 'buffer';
 
 export const processMeetingAudio = async (
   audioBlob: Blob, 
@@ -16,140 +17,71 @@ export const processMeetingAudio = async (
   try {
     const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
     const totalBytes = audioBlob.size;
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     
-    log(`Starting Flow. Blob size: ${(totalBytes / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
+    log(`Starting Safe Upload Flow. Blob size: ${(totalBytes / 1024 / 1024).toFixed(2)} MB. Type: ${mimeType}`);
 
-    // 1. Handshake (Server-side to protect API Key)
-    log("Step 1: Requesting Upload URL (Option B Handshake)...");
-    const authResponse = await fetch('/.netlify/functions/gemini', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-          action: 'authorize_upload', 
-          mimeType, 
-          fileSize: totalBytes.toString() 
-      })
-    });
-
-    if (!authResponse.ok) {
-        const err = await authResponse.text();
-        throw new Error(`Handshake Failed: ${err}`);
-    }
-    const { uploadUrl } = await authResponse.json();
-    log("Step 1: Upload URL received.");
-
-    // 2. Direct Upload Loop (Browser -> Google)
-    // STRATEGY: Header-Based Protocol (POST)
-    // We used this before and it worked for chunks 1-3. 
-    // We now use it for ALL chunks, relying on Auto-Finalization for the last one.
-    
-    const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
+    // --- STEP 1: CHUNKED UPLOAD TO STORAGE (Netlify Blobs) ---
+    // We split into 4MB chunks to strictly adhere to Netlify Function 6MB payload limit.
+    const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
     let offset = 0;
-    let fileUri = '';
+    let chunkIndex = 0;
 
-    log(`Step 2: Starting Direct Upload (${(CHUNK_SIZE/1024/1024).toFixed(0)}MB chunks)...`);
+    log(`Step 1: Uploading to temporary storage in ${(UPLOAD_CHUNK_SIZE/1024/1024).toFixed(0)}MB chunks...`);
 
     while (offset < totalBytes) {
-        const chunkEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
-        const chunkBlob = audioBlob.slice(offset, chunkEnd, ''); // Empty type to avoid auto-headers
-        const isLastChunk = chunkEnd === totalBytes;
+        const chunkEnd = Math.min(offset + UPLOAD_CHUNK_SIZE, totalBytes);
+        const chunkBlob = audioBlob.slice(offset, chunkEnd);
         
-        // We track progress for UI
         const progress = Math.round((chunkEnd / totalBytes) * 100);
-        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${progress}%)`);
+        log(`Uploading chunk ${chunkIndex + 1}: ${offset}-${chunkEnd} (${progress}%)`);
 
-        // Protocol: Always use 'upload'. 
-        // Server knows total size from handshake, so it auto-finalizes on last byte.
-        const headers: Record<string, string> = {
-            'X-Goog-Upload-Command': 'upload',
-            'X-Goog-Upload-Offset': offset.toString()
-        };
-        
-        // Debug headers
-        log(`Headers: ${JSON.stringify(headers)}`);
+        // Convert to Base64 to safely pass through JSON body
+        const base64Data = await blobToBase64(chunkBlob);
 
-        try {
-            const response = await fetch(uploadUrl, {
-                method: 'POST', // POST is standard for Command protocol
-                headers: headers,
-                body: chunkBlob
-            });
+        // Upload to Backend -> Netlify Blob
+        const uploadResp = await fetch('/.netlify/functions/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                action: 'upload_chunk', 
+                jobId, 
+                chunkIndex, 
+                data: base64Data 
+            })
+        });
 
-            log(`Chunk Response Status: ${response.status} ${response.statusText}`);
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Chunk Upload Failed [${response.status}]: ${errorText}`);
-            }
-
-            // If this was the last chunk, we expect the file URI in the response
-            if (isLastChunk) {
-                log("Final chunk sent. Reading response JSON...");
-                try {
-                    const result = await response.json();
-                    console.log("Full Finalize Response:", result);
-
-                    if (result.file && result.file.uri) {
-                        fileUri = result.file.uri;
-                    } else if (result.uri) {
-                        fileUri = result.uri;
-                    }
-                    
-                    if (fileUri) {
-                        log(`Upload Complete. File URI obtained: ${fileUri}`);
-                    } else {
-                        log("Warning: Final response OK but URI not found in standard paths.");
-                    }
-                } catch (jsonErr) {
-                    console.error("JSON Parse Error on Final Chunk:", jsonErr);
-                    throw new Error("Failed to parse final response from Google.");
-                }
-            }
-        } catch (fetchErr: any) {
-            log(`Network/Fetch Error on chunk starting at ${offset}: ${fetchErr.message}`);
-            if (fetchErr.message === 'Failed to fetch') {
-                log("Suggestion: CORS Preflight failure. Retrying chunk once...");
-                // Simple 1-time retry for the chunk
-                try {
-                    await new Promise(r => setTimeout(r, 1000));
-                    log(`Retrying chunk ${offset}...`);
-                    const retryResponse = await fetch(uploadUrl, {
-                        method: 'POST',
-                        headers: headers,
-                        body: chunkBlob
-                    });
-                    if (!retryResponse.ok) throw new Error("Retry failed");
-                    if (isLastChunk) {
-                        const result = await retryResponse.json();
-                        if (result.file?.uri) fileUri = result.file.uri;
-                        else if (result.uri) fileUri = result.uri;
-                    }
-                    log("Retry successful!");
-                } catch (retryErr) {
-                    log("Retry failed.");
-                    throw fetchErr; // Throw original
-                }
-            } else {
-                throw fetchErr;
-            }
+        if (!uploadResp.ok) {
+            const err = await uploadResp.text();
+            throw new Error(`Storage Upload Failed (Chunk ${chunkIndex}): ${err}`);
         }
 
-        offset += CHUNK_SIZE;
-    }
-
-    if (!fileUri) {
-        throw new Error("Upload finished but no File URI was returned from Google.");
+        offset += UPLOAD_CHUNK_SIZE;
+        chunkIndex++;
     }
     
-    // 3. Start Background Job
-    log(`Step 3: Queuing Background Job with model: ${model}...`);
-    
-    const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const totalChunks = chunkIndex;
+    log(`Storage Upload Complete. ${totalChunks} chunks saved.`);
 
+    // --- STEP 2: TRIGGER SERVER-SIDE PROCESSING ---
+    // The background function will:
+    // 1. Read chunks from storage
+    // 2. Stitch them into 8MB buffers (Gemini Requirement)
+    // 3. Upload to Gemini Server-to-Server (No CORS)
+    
+    log(`Step 2: Queuing Server-Side Processing with model: ${model}...`);
+    
     const startResp = await fetch('/.netlify/functions/gemini-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileUri, mimeType, mode, jobId, model })
+        body: JSON.stringify({ 
+            jobId, 
+            totalChunks, 
+            mimeType, 
+            mode, 
+            model,
+            fileSize: totalBytes
+        })
     });
 
     if (startResp.status !== 202 && !startResp.ok) {
@@ -157,11 +89,11 @@ export const processMeetingAudio = async (
         throw new Error(`Failed to start background job: ${errorText}`);
     }
     
-    log(`Job started with ID: ${jobId}. Waiting...`);
+    log(`Job started with ID: ${jobId}. Waiting for results...`);
 
-    // 4. Poll for results
+    // --- STEP 3: POLL FOR RESULTS ---
     let attempts = 0;
-    const MAX_ATTEMPTS = 200; 
+    const MAX_ATTEMPTS = 300; // 15 minutes (300 * 3s)
     
     while (attempts < MAX_ATTEMPTS) {
         attempts++;
@@ -177,12 +109,15 @@ export const processMeetingAudio = async (
 
         if (pollResp.status === 200) {
             const data = await pollResp.json();
+            
             if (data.status === 'COMPLETED' && data.result) {
-                log("Job Completed!");
+                log("Job Completed Successfully!");
                 return parseResponse(data.result, mode);
-            } else if (data.status === 'ERROR') {
+            } 
+            else if (data.status === 'ERROR') {
                 throw new Error(`Processing Error: ${data.error}`);
             }
+            // If PROCESSING, continue loop
         }
     }
 
@@ -209,6 +144,20 @@ function getMimeTypeFromBlob(blob: Blob, defaultType: string): string {
         return blob.type;
     }
     return defaultType;
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      // Remove data URL prefix (e.g., "data:audio/webm;base64,")
+      const base64 = result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {

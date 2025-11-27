@@ -2,7 +2,7 @@
 import { getStore } from "@netlify/blobs";
 
 // This function handles Synchronous tasks:
-// 1. Upload Handshake (Fast)
+// 1. Upload Chunks to Storage (Fast)
 // 2. Check Status (Fast - Reads from Blob)
 
 const corsHeaders = {
@@ -35,42 +35,25 @@ export default async (req: Request) => {
     const payload = await req.json();
     const { action } = payload;
 
-    // --- ACTION 1: AUTHORIZE UPLOAD (Handshake) ---
-    // This implements Option B: Backend gets URL, Frontend uploads directly.
-    if (action === 'authorize_upload') {
-      const { mimeType, fileSize } = payload;
+    // --- ACTION 1: UPLOAD CHUNK TO STORAGE ---
+    // Saves a 4MB chunk to Netlify Blobs
+    if (action === 'upload_chunk') {
+      const { jobId, chunkIndex, data } = payload;
       
-      // Strict type check
-      const fileSizeStr = String(fileSize);
-
-      const initResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
-        method: 'POST',
-        headers: {
-          'X-Goog-Upload-Protocol': 'resumable',
-          'X-Goog-Upload-Command': 'start',
-          'X-Goog-Upload-Header-Content-Length': fileSizeStr,
-          'X-Goog-Upload-Header-Content-Type': mimeType,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-            file: {
-                display_name: `Meeting_Audio_${Date.now()}` 
-            }
-        })
-      });
-
-      if (!initResponse.ok) {
-         const errText = await initResponse.text();
-         throw new Error(`Google Handshake Failed (${initResponse.status}): ${errText}`);
+      if (!jobId || chunkIndex === undefined || !data) {
+          return new Response("Missing chunk data", { status: 400, headers: corsHeaders });
       }
 
-      const uploadUrl = initResponse.headers.get('x-goog-upload-url');
+      // Use a dedicated store for temporary uploads
+      const store = getStore({ name: "meeting-uploads", consistency: "strong" });
       
-      if (!uploadUrl) {
-          throw new Error("Google did not return an upload URL");
-      }
+      // Key format: job_id/chunk_index
+      const key = `${jobId}/${chunkIndex}`;
       
-      return new Response(JSON.stringify({ uploadUrl }), {
+      // Save data (Base64 string)
+      await store.set(key, data);
+
+      return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
@@ -80,7 +63,7 @@ export default async (req: Request) => {
         const { jobId } = payload;
         if (!jobId) return new Response("Missing jobId", { status: 400, headers: corsHeaders });
 
-        // Connect to Netlify Blobs
+        // Connect to Netlify Blobs (Results store)
         const store = getStore({ name: "meeting-results", consistency: "strong" });
         
         const data = await store.get(jobId, { type: "json" });
