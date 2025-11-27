@@ -58,8 +58,15 @@ export default async (req: Request) => {
         throw new Error(`Init Handshake Failed (${initResp.status}): ${errText}`);
     }
     
-    const uploadUrl = initResp.headers.get('x-goog-upload-url');
+    let uploadUrl = initResp.headers.get('x-goog-upload-url');
     if (!uploadUrl) throw new Error("No upload URL returned from Google");
+
+    // CRITICAL FIX: The returned uploadUrl usually does NOT contain the API key.
+    // We must manually append it to ensure subsequent PUT/POST requests are authenticated.
+    if (!uploadUrl.includes('key=')) {
+        const separator = uploadUrl.includes('?') ? '&' : '?';
+        uploadUrl = `${uploadUrl}${separator}key=${apiKey}`;
+    }
 
     // --- 2. STITCH & UPLOAD CHUNKS ---
     await updateStatus("Checkpoint 2: Stitching and Uploading Chunks...");
@@ -95,8 +102,7 @@ export default async (req: Request) => {
                 headers: {
                     'Content-Length': String(GEMINI_CHUNK_SIZE),
                     'X-Goog-Upload-Command': 'upload',
-                    'X-Goog-Upload-Offset': String(uploadOffset),
-                    'x-goog-api-key': apiKey // CRITICAL FIX: Add API Key header
+                    'X-Goog-Upload-Offset': String(uploadOffset)
                 },
                 body: chunkToSend
             });
@@ -121,8 +127,7 @@ export default async (req: Request) => {
         headers: {
             'Content-Length': String(finalSize),
             'X-Goog-Upload-Command': 'upload, finalize',
-            'X-Goog-Upload-Offset': String(uploadOffset),
-            'x-goog-api-key': apiKey // CRITICAL FIX: Add API Key header
+            'X-Goog-Upload-Offset': String(uploadOffset)
         },
         body: buffer
     });
@@ -168,14 +173,10 @@ export default async (req: Request) => {
 async function waitForFileActive(fileUri: string, apiKey: string) {
     let attempts = 0;
     while (attempts < 60) {
-        // fileUri is a standard REST resource, so query param ?key= works here,
-        // but adding header ensures robustness.
-        const r = await fetch(`${fileUri}?key=${apiKey}`, {
-            headers: { 'x-goog-api-key': apiKey }
-        });
+        // Appending key is crucial here too
+        const r = await fetch(`${fileUri}?key=${apiKey}`);
         
         if (!r.ok) {
-             // Handle 404 or other errors during polling
              if (r.status === 404) throw new Error("File not found during polling");
              // Retry on temporary errors
         } else {
@@ -222,7 +223,6 @@ async function generateContent(fileUri: string, mimeType: string, mode: string, 
 
         return response.text || "{}";
     } catch (error: any) {
-        // Extract inner message from GoogleGenAIError
         throw new Error(`Gemini Generation Failed: ${error.message || error}`);
     }
 }
