@@ -224,16 +224,7 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         // Final Fallback: If Regex failed and we are in single-mode, assumes raw text might be the content
         if (!transcription && !summary) {
             if (mode === 'TRANSCRIPT_ONLY') {
-                // If it looks like JSON wrapper but failed parsing, strip the wrapper
-                if (cleanText.trim().startsWith('{')) {
-                     // Remove opening { "transcription": " (flexible whitespace)
-                     let text = cleanText.replace(/^\s*{\s*"transcription"\s*:\s*"/, '');
-                     // Remove trailing "} or "
-                     text = text.replace(/"\s*}\s*$/, '').replace(/"\s*$/, '');
-                     transcription = text;
-                } else {
-                     transcription = cleanText;
-                }
+                transcription = cleanText;
                 isError = false; 
             } else if (mode === 'NOTES_ONLY') {
                 summary = cleanText;
@@ -251,6 +242,17 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
         transcription = "";
     }
     
+    // AGGRESSIVE CLEANUP: Remove leaking JSON artifacts from transcript
+    // Sometimes the model outputs { "transcription": "..." } even in non-JSON mode or regex extraction includes it.
+    if (transcription) {
+        // Remove leading { "transcription": " (and variations)
+        transcription = transcription.replace(/^\s*{\s*"transcription"\s*:\s*"/i, '');
+        // Remove trailing "} (and variations)
+        transcription = transcription.replace(/"\s*}\s*$/i, '');
+        // Remove just trailing quote if present
+        transcription = transcription.replace(/"\s*$/i, '');
+    }
+
     return {
         transcription,
         summary,

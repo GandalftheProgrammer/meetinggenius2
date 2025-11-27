@@ -129,15 +129,15 @@ const convertMarkdownToHtml = (markdown: string): string => {
         .replace(/^### (.*$)/gm, '<h3 style="color:#475569; font-size:16px; margin-top:12px;">$1</h3>')
         // Bold
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        // Action Items [ ] (Process BEFORE generic lists to avoid conflict)
+        .replace(/- \[ \] (.*$)/gm, '<li style="list-style-type: none;">☐ $1</li>')
         // Lists
         .replace(/^- (.*$)/gm, '<li>$1</li>')
-        // Action Items [ ]
-        .replace(/- \[ \] (.*$)/gm, '<li style="list-style-type: square;">☐ $1</li>')
         // Paragraphs (double newline)
         .replace(/\n\n/g, '<br><br>');
 
-    // Wrap lists
-    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+    // Wrap lists - Non-greedy match for consecutive list items
+    html = html.replace(/((?:<li.*?>.*?<\/li>\s*)+)/g, '<ul>$1</ul>');
     
     // Add basic styling container
     return `
@@ -146,8 +146,9 @@ const convertMarkdownToHtml = (markdown: string): string => {
       <head>
         <style>
           body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          ul { margin-bottom: 10px; }
+          ul { margin-bottom: 10px; padding-left: 20px; }
           li { margin-bottom: 5px; }
+          h1, h2, h3 { color: #334155; }
         </style>
       </head>
       <body>
