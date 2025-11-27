@@ -1,3 +1,4 @@
+
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
 export const processMeetingAudio = async (
@@ -38,11 +39,9 @@ export const processMeetingAudio = async (
     log("Step 1: Upload URL received.");
 
     // 2. Direct Upload Loop (Browser -> Google)
-    // We use the standard Resumable Upload Protocol:
-    // - PUT requests
-    // - 8MB chunks (Google Granularity)
-    // - Content-Range header
-    // - 308 (Resume Incomplete) or 200/201 (Created) status codes
+    // We use the Header-Based Resumable Upload Protocol (Option B Variant)
+    // This uses POST + X-Goog-Upload-Command headers which is often more CORS friendly
+    // than PUT + Content-Range for browser clients.
 
     const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
     let offset = 0;
@@ -53,66 +52,42 @@ export const processMeetingAudio = async (
     while (offset < totalBytes) {
         const chunkEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
         const chunkBlob = audioBlob.slice(offset, chunkEnd);
-        const chunkArrayBuffer = await chunkBlob.arrayBuffer(); // Convert to ArrayBuffer
         const isLastChunk = chunkEnd === totalBytes;
         
-        // Content-Range: bytes start-end/total
-        // Note: 'end' is inclusive in HTTP Range header (e.g. 0-9 for 10 bytes)
-        const rangeHeader = `bytes ${offset}-${chunkEnd - 1}/${totalBytes}`;
+        const command = isLastChunk ? 'upload, finalize' : 'upload';
         
-        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${((chunkEnd/totalBytes)*100).toFixed(0)}%)`);
+        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${((chunkEnd/totalBytes)*100).toFixed(0)}%) [${command}]`);
 
-        await new Promise<void>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('PUT', uploadUrl, true);
-            
-            // Standard HTTP Headers for Resumable Upload
-            // REMOVED: Content-Length (Unsafe to set manually in browser)
-            // ADDED: Content-Range
-            xhr.setRequestHeader('Content-Range', rangeHeader);
-            
-            // NOTE: We do NOT set Content-Type. Sending ArrayBuffer sends no Content-Type, 
-            // which avoids mismatches since we defined it in the handshake.
-            
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable && isLastChunk) {
-                   // Optional: finer progress for the last chunk
-                }
-            };
-
-            xhr.onload = () => {
-                // 308: Resume Incomplete (Chunk accepted, waiting for more)
-                // 200/201: Upload Complete
-                if (xhr.status === 308) {
-                    resolve();
-                } else if (xhr.status === 200 || xhr.status === 201) {
-                    try {
-                        const json = JSON.parse(xhr.responseText);
-                        if (json.file && json.file.uri) {
-                            fileUri = json.file.uri;
-                            log("Upload Complete. File URI obtained.");
-                            resolve();
-                        } else {
-                            log("Upload Complete (200/201).");
-                            if (!fileUri && json.uri) fileUri = json.uri; 
-                            resolve();
-                        }
-                    } catch (e) {
-                         log(`Warning: Could not parse response JSON: ${xhr.responseText}`);
-                         resolve();
-                    }
-                } else {
-                    reject(new Error(`Chunk Upload Failed: ${xhr.status} ${xhr.statusText}`));
-                }
-            };
-
-            xhr.onerror = () => {
-                reject(new Error("Network Error during Chunk Upload"));
-            };
-
-            // Send raw bytes (ArrayBuffer)
-            xhr.send(chunkArrayBuffer);
+        // We use fetch with POST and custom headers
+        const response = await fetch(uploadUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Length': chunkBlob.size.toString(),
+                'X-Goog-Upload-Offset': offset.toString(),
+                'X-Goog-Upload-Command': command
+            },
+            body: chunkBlob
         });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Chunk Upload Failed [${response.status}]: ${errorText}`);
+        }
+
+        // If this was the last chunk and finalize was sent, we expect the file URI in the response
+        if (isLastChunk) {
+            const result = await response.json();
+            if (result.file && result.file.uri) {
+                fileUri = result.file.uri;
+                log("Upload Complete. File URI obtained.");
+            } else {
+                // Sometimes the API might return it differently or it might have been finalized earlier
+                // Fallback check
+                log("Upload finalized. Checking response for URI...");
+                console.log("Finalize Response:", result);
+                if (result.uri) fileUri = result.uri;
+            }
+        }
 
         offset += CHUNK_SIZE;
     }
@@ -141,7 +116,7 @@ export const processMeetingAudio = async (
     
     log(`Job started with ID: ${jobId}. Waiting...`);
 
-    // 4. Poll for Results
+    // 4. Poll for results
     let attempts = 0;
     const MAX_ATTEMPTS = 200; 
     
