@@ -40,9 +40,7 @@ export const processMeetingAudio = async (
 
     // 2. Direct Upload Loop (Browser -> Google)
     // We use the Header-Based Resumable Upload Protocol (Option B Variant)
-    // This uses POST + X-Goog-Upload-Command headers which is often more CORS friendly
-    // than PUT + Content-Range for browser clients.
-
+    
     const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
     let offset = 0;
     let fileUri = '';
@@ -54,39 +52,68 @@ export const processMeetingAudio = async (
         const chunkBlob = audioBlob.slice(offset, chunkEnd);
         const isLastChunk = chunkEnd === totalBytes;
         
+        // Strict command logic
         const command = isLastChunk ? 'upload, finalize' : 'upload';
         
-        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${((chunkEnd/totalBytes)*100).toFixed(0)}%) [${command}]`);
+        const progress = Math.round((chunkEnd / totalBytes) * 100);
+        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${progress}%) [${command}]`);
 
-        // We use fetch with POST and custom headers
-        const response = await fetch(uploadUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Length': chunkBlob.size.toString(),
-                'X-Goog-Upload-Offset': offset.toString(),
-                'X-Goog-Upload-Command': command
-            },
-            body: chunkBlob
-        });
+        // Prepare headers explicitly
+        const headers: Record<string, string> = {
+            'Content-Length': chunkBlob.size.toString(),
+            'X-Goog-Upload-Offset': offset.toString(),
+            'X-Goog-Upload-Command': command
+        };
+        
+        log(`Headers: ${JSON.stringify(headers)}`);
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Chunk Upload Failed [${response.status}]: ${errorText}`);
-        }
+        try {
+            const response = await fetch(uploadUrl, {
+                method: 'POST',
+                headers: headers,
+                body: chunkBlob
+            });
 
-        // If this was the last chunk and finalize was sent, we expect the file URI in the response
-        if (isLastChunk) {
-            const result = await response.json();
-            if (result.file && result.file.uri) {
-                fileUri = result.file.uri;
-                log("Upload Complete. File URI obtained.");
-            } else {
-                // Sometimes the API might return it differently or it might have been finalized earlier
-                // Fallback check
-                log("Upload finalized. Checking response for URI...");
-                console.log("Finalize Response:", result);
-                if (result.uri) fileUri = result.uri;
+            log(`Chunk Response Status: ${response.status} ${response.statusText}`);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Chunk Upload Failed [${response.status}]: ${errorText}`);
             }
+
+            // If this was the last chunk, we expect the file URI in the response
+            if (isLastChunk) {
+                log("Final chunk sent. Reading response JSON...");
+                try {
+                    const result = await response.json();
+                    console.log("Full Finalize Response:", result);
+
+                    if (result.file && result.file.uri) {
+                        fileUri = result.file.uri;
+                    } else if (result.uri) {
+                         // Fallback structure
+                        fileUri = result.uri;
+                    }
+                    
+                    if (fileUri) {
+                        log(`Upload Complete. File URI obtained: ${fileUri}`);
+                    } else {
+                        log("Warning: Final response OK but URI not found in standard paths.");
+                    }
+                } catch (jsonErr) {
+                    console.error("JSON Parse Error on Final Chunk:", jsonErr);
+                    // Sometimes the server returns 200 OK without JSON on finalization if headers were mixed?
+                    // But for 'upload, finalize', it SHOULD return JSON.
+                    throw new Error("Failed to parse final response from Google.");
+                }
+            }
+        } catch (fetchErr: any) {
+            log(`Network/Fetch Error on chunk starting at ${offset}: ${fetchErr.message}`);
+            // Check if it's a "Failed to fetch" which is often CORS or Connection Closed
+            if (fetchErr.message === 'Failed to fetch') {
+                log("Suggestion: This often indicates a CORS Preflight failure or the server closed the connection unexpectedly.");
+            }
+            throw fetchErr;
         }
 
         offset += CHUNK_SIZE;
@@ -96,8 +123,6 @@ export const processMeetingAudio = async (
         throw new Error("Upload finished but no File URI was returned from Google.");
     }
     
-    log(`File URI: ${fileUri}`);
-
     // 3. Start Background Job
     log(`Step 3: Queuing Background Job with model: ${model}...`);
     
