@@ -96,7 +96,16 @@ const Recorder: React.FC<RecorderProps> = ({
   const requestWakeLock = async () => {
     if ('wakeLock' in navigator) {
         try {
-            wakeLockRef.current = await navigator.wakeLock.request('screen');
+            const sentinel = await navigator.wakeLock.request('screen');
+            wakeLockRef.current = sentinel;
+            
+            // Add listener to handle involuntary release (e.g. system timeout)
+            sentinel.addEventListener('release', () => {
+                // We reset the ref so we know we need to re-acquire it later (e.g. on visibility change)
+                if (wakeLockRef.current === sentinel) {
+                    wakeLockRef.current = null;
+                }
+            });
         } catch (err: any) {
             console.log(`Wake Lock error: ${err.message}`);
         }
@@ -150,20 +159,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
       // 2. Attempt Silent Loop Hack (Fail-safe)
       if (silentAudioRef.current) {
-          silentAudioRef.current.play().then(() => {
-             // 3. Update Media Session Metadata
-             if ('mediaSession' in navigator) {
-                navigator.mediaSession.metadata = new MediaMetadata({
-                    title: 'Meeting Recording',
-                    artist: 'MeetingGenius',
-                    album: 'Background Active'
-                });
-                navigator.mediaSession.playbackState = 'playing';
-                // Dummy handler to prevent media keys from killing the session
-                navigator.mediaSession.setActionHandler('play', () => {});
-                navigator.mediaSession.setActionHandler('pause', () => {});
-            }
-          }).catch(err => {
+          silentAudioRef.current.play().catch(err => {
               console.warn("Silent audio hack failed (ignoring, proceeding with recording):", err);
           });
       }
@@ -276,9 +272,6 @@ const Recorder: React.FC<RecorderProps> = ({
       if (silentAudioRef.current) {
           silentAudioRef.current.pause();
           silentAudioRef.current.currentTime = 0;
-      }
-      if ('mediaSession' in navigator) {
-          navigator.mediaSession.playbackState = 'none';
       }
 
       setStream(null);

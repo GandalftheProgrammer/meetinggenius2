@@ -69,6 +69,7 @@ export const initDrive = (callback: (token: string) => void) => {
           // If the silent auth fails, the first actual Upload attempt will error out,
           // prompting a real reconnect. This satisfies the "UI looks permanent" requirement.
           if (storedToken) {
+              accessToken = storedToken; // Ensure internal token is set optimistically
               callback(storedToken); 
           }
       } catch (e) {
