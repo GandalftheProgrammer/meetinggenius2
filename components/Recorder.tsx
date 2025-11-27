@@ -45,6 +45,7 @@ const Recorder: React.FC<RecorderProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   
   // Silent Audio Player Ref
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -59,16 +60,59 @@ const Recorder: React.FC<RecorderProps> = ({
     const audio = new Audio(SILENT_AUDIO_URI);
     audio.loop = true;
     audio.volume = 0.01; // Non-zero volume is required for iOS to consider it "playing"
+    // Helper attributes for iOS/Android background playback
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('webkit-playsinline', 'true');
+    audio.preload = 'auto';
     silentAudioRef.current = audio;
 
+    // Handle visibility change to re-acquire resources if dropped
+    const handleVisibilityChange = async () => {
+        if (document.visibilityState === 'visible') {
+            // Re-acquire Wake Lock if recording
+            if (isRecording) {
+                await requestWakeLock();
+            }
+            // Resume Audio Context if suspended
+            if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+                audioContextRef.current.resume();
+            }
+        }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       cleanupResources();
+      releaseWakeLock();
       if (silentAudioRef.current) {
           silentAudioRef.current.pause();
           silentAudioRef.current = null;
       }
     };
-  }, []);
+  }, [isRecording]);
+
+  const requestWakeLock = async () => {
+    if ('wakeLock' in navigator) {
+        try {
+            wakeLockRef.current = await navigator.wakeLock.request('screen');
+        } catch (err: any) {
+            console.log(`Wake Lock error: ${err.message}`);
+        }
+    }
+  };
+
+  const releaseWakeLock = async () => {
+      if (wakeLockRef.current) {
+          try {
+            await wakeLockRef.current.release();
+            wakeLockRef.current = null;
+          } catch (e) {
+              console.log("Wake lock release error", e);
+          }
+      }
+  };
 
   const cleanupResources = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -101,11 +145,13 @@ const Recorder: React.FC<RecorderProps> = ({
 
   const startRecording = async () => {
     try {
-      // 1. Attempt Silent Loop Hack (Fail-safe)
-      // We wrap this in a separate try/catch so it doesn't block the main microphone access if it fails.
+      // 1. Request Wake Lock (Keep screen on)
+      await requestWakeLock();
+
+      // 2. Attempt Silent Loop Hack (Fail-safe)
       if (silentAudioRef.current) {
           silentAudioRef.current.play().then(() => {
-             // 2. Update Media Session Metadata only if play succeeds
+             // 3. Update Media Session Metadata
              if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: 'Meeting Recording',
@@ -113,6 +159,9 @@ const Recorder: React.FC<RecorderProps> = ({
                     album: 'Background Active'
                 });
                 navigator.mediaSession.playbackState = 'playing';
+                // Dummy handler to prevent media keys from killing the session
+                navigator.mediaSession.setActionHandler('play', () => {});
+                navigator.mediaSession.setActionHandler('pause', () => {});
             }
           }).catch(err => {
               console.warn("Silent audio hack failed (ignoring, proceeding with recording):", err);
@@ -137,6 +186,7 @@ const Recorder: React.FC<RecorderProps> = ({
             alert("No audio shared! Please ensure you check the 'Share tab audio' box.");
             displayStream.getTracks().forEach(t => t.stop());
             if (silentAudioRef.current) silentAudioRef.current.pause();
+            await releaseWakeLock();
             return;
           }
 
@@ -164,6 +214,7 @@ const Recorder: React.FC<RecorderProps> = ({
         } catch (err) {
           console.error("Error setting up mixed audio:", err);
           if (silentAudioRef.current) silentAudioRef.current.pause();
+          await releaseWakeLock();
           return; 
         }
       } else {
@@ -208,16 +259,19 @@ const Recorder: React.FC<RecorderProps> = ({
     } catch (error) {
       console.error("Error accessing audio:", error);
       alert("Could not access audio device. Please check permissions.");
-      // Ensure silent audio stops if mic fails
       if (silentAudioRef.current) silentAudioRef.current.pause();
+      await releaseWakeLock();
     }
   };
 
-  const stopRecording = useCallback(() => {
+  const stopRecording = useCallback(async () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       cleanupResources();
       
+      // Stop Wake Lock
+      await releaseWakeLock();
+
       // Stop the Silent Loop
       if (silentAudioRef.current) {
           silentAudioRef.current.pause();
@@ -352,7 +406,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
       {isMobile && !isRecording && (
          <div className="mb-6 text-center">
-           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized (Background Safe)</span>
+           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized (Screen Wake Lock & Background)</span>
          </div>
       )}
 
