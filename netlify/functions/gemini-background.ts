@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { getStore } from "@netlify/blobs";
 import { Buffer } from "node:buffer";
@@ -34,8 +35,7 @@ export default async (req: Request) => {
 
     // --- 1. INITIALIZE GEMINI UPLOAD ---
     // We use raw fetch here because we are implementing a specific chunk stitching logic 
-    // to bypass Netlify Function payload limits, which might be hard to replicate 
-    // with standard SDK file managers that expect local files.
+    // to bypass Netlify Function payload limits.
     const initResp = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
         method: 'POST',
         headers: {
