@@ -239,13 +239,8 @@ export default async (req: Request) => {
         }
     } catch (e) {}
 
-    // 2. Add API Key Debug Info REMOVED FOR SECURITY as auth is resolved.
-    
-    // 3. Construct Final User Message
-    const finalError = `${errorMessage}`;
-
     const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
-    await resultStore.setJSON(jobId, { status: 'ERROR', error: finalError });
+    await resultStore.setJSON(jobId, { status: 'ERROR', error: errorMessage });
   }
 };
 
@@ -278,22 +273,31 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodedKey}`;
 
     const systemInstruction = `You are an expert meeting secretary.
-    1. Detect the language and write notes in that language.
-    2. If silent/noise, return fallback JSON.
+    1. Detect the language of the audio and write the output in that same language.
+    2. If the audio is silent or contains only noise, return a valid JSON with empty fields, do not return an error.
     3. Action items must be EXPLICIT tasks only.
+    
+    STRICT OUTPUT FORMAT:
+    You MUST return a raw JSON object (no markdown code blocks) with the following schema:
+    {
+      "transcription": "The full verbatim transcript...",
+      "summary": "A concise summary...",
+      "conclusions": ["Conclusion 1", "Conclusion 2"],
+      "actionItems": ["Task 1", "Task 2"]
+    }
     `;
 
     let taskInstruction = "";
-    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe verbatim.";
-    else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
-    else taskInstruction = "Transcribe verbatim AND create structured notes.";
+    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe the audio verbatim. Leave summary/conclusions/actionItems empty.";
+    else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes (summary, conclusions, actionItems). Leave transcription empty.";
+    else taskInstruction = "Transcribe the audio verbatim AND create structured notes.";
 
     const payload = {
         contents: [
             {
                 parts: [
                     { file_data: { file_uri: fileUri, mime_type: mimeType } },
-                    { text: taskInstruction + "\n\nReturn JSON." }
+                    { text: taskInstruction + "\n\nReturn strict JSON." }
                 ]
             }
         ],
@@ -303,7 +307,14 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
         generation_config: {
             response_mime_type: "application/json",
             max_output_tokens: 8192
-        }
+        },
+        // SAFETY SETTINGS: DISABLE ALL FILTERS to prevent empty responses on informal speech
+        safety_settings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ]
     };
 
     // Retry Loop for 503/429 Errors for a SINGLE model
@@ -322,7 +333,12 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
             if (resp.ok) {
                 const data = await resp.json();
                 const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                return text || "{}";
+                // If model returns nothing (due to safety or error), default to empty JSON to prevent parser crashes
+                if (!text) {
+                    console.warn(`[Background] Model returned empty text. FinishReason: ${data.candidates?.[0]?.finishReason}`);
+                    return "{}";
+                }
+                return text;
             }
 
             // Handle Retriable Errors

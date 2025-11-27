@@ -111,6 +111,10 @@ export const processMeetingAudio = async (
             
             if (data.status === 'COMPLETED' && data.result) {
                 log("Job Completed Successfully!");
+                if (typeof data.result === 'string') {
+                    // Log snippet for debugging
+                    console.log("[GeminiService] Response Snippet:", data.result.substring(0, 100));
+                }
                 return parseResponse(data.result, mode);
             } 
             else if (data.status === 'ERROR') {
@@ -184,6 +188,7 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     let summary = "";
     let conclusions: string[] = [];
     let actionItems: string[] = [];
+    let isError = false;
 
     // Attempt to parse JSON
     try {
@@ -200,37 +205,45 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
             conclusions = rawData.conclusions || rawData.decisions || [];
             actionItems = rawData.actionItems || [];
         } else {
-            // Not a JSON object, might be raw text
-            throw new Error("Not JSON");
+            // Not a JSON object, might be raw text or empty
+            if (!cleanText) {
+                // Empty string returned
+                isError = false; 
+            } else {
+                throw new Error("Not JSON");
+            }
         }
     } catch (e) {
         // Fallback Logic based on requested Mode
+        isError = true;
         if (mode === 'TRANSCRIPT_ONLY') {
             // If we only asked for a transcript, assume the raw text IS the transcript
             transcription = jsonText;
-            summary = ""; // Ensure summary is empty so UI doesn't show "Error"
+            summary = ""; // Explicitly empty
+            isError = false; // Recovered
         } else if (mode === 'NOTES_ONLY') {
-            // If we asked for notes but got raw text, put it in summary? 
-            // Or maybe it failed completely. Let's put it in summary for safety.
             summary = jsonText;
             transcription = "";
+            isError = false; // Recovered
         } else {
             // ALL mode failed to parse JSON
             transcription = jsonText;
-            summary = "Error parsing structured notes.";
         }
     }
 
-    // Force Cleanup based on Mode (Double check)
-    // This ensures that if we run 'NOTES_ONLY', we don't accidentally return an empty transcript
-    // that overwrites an existing transcript in the main App state (although App.tsx handles ||, it's safer here)
+    // Force Cleanup based on Mode
     if (mode === 'TRANSCRIPT_ONLY') {
         summary = "";
         conclusions = [];
         actionItems = [];
+    } else if (mode === 'NOTES_ONLY') {
+        transcription = "";
     }
-    // Note: We don't clear transcription for NOTES_ONLY because usually NOTES_ONLY returns a summary 
-    // but implies the transcript was already there or not needed.
+    
+    // Only set error message if we couldn't recover and expected summary
+    if (isError && mode !== 'TRANSCRIPT_ONLY' && !summary) {
+        summary = "Error parsing structured notes.";
+    }
 
     return {
         transcription,
