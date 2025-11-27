@@ -120,19 +120,68 @@ const ensureFolderHierarchy = async (subFolder: string): Promise<string> => {
     return subId;
 };
 
+// --- SIMPLE MARKDOWN TO HTML CONVERTER ---
+const convertMarkdownToHtml = (markdown: string): string => {
+    let html = markdown
+        // Headers
+        .replace(/^# (.*$)/gm, '<h1 style="color:#1e293b; font-size:24px; margin-top:20px;">$1</h1>')
+        .replace(/^## (.*$)/gm, '<h2 style="color:#334155; font-size:18px; margin-top:16px;">$1</h2>')
+        .replace(/^### (.*$)/gm, '<h3 style="color:#475569; font-size:16px; margin-top:12px;">$1</h3>')
+        // Bold
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        // Lists
+        .replace(/^- (.*$)/gm, '<li>$1</li>')
+        // Action Items [ ]
+        .replace(/- \[ \] (.*$)/gm, '<li style="list-style-type: square;">☐ $1</li>')
+        // Paragraphs (double newline)
+        .replace(/\n\n/g, '<br><br>');
+
+    // Wrap lists
+    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+    
+    // Add basic styling container
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          ul { margin-bottom: 10px; }
+          li { margin-bottom: 5px; }
+        </style>
+      </head>
+      <body>
+        ${html}
+      </body>
+      </html>
+    `;
+};
+
 // --- UPLOAD LOGIC ---
 
 // Generic upload function for both Blob (Audio) and String (Text)
-const uploadFileToDrive = async (filename: string, content: Blob | string, mimeType: string, folderName: string): Promise<{id: string, webViewLink?: string}> => {
+const uploadFileToDrive = async (
+    filename: string, 
+    content: Blob | string, 
+    mimeType: string, 
+    folderName: string,
+    convertToGoogleDoc: boolean = false
+): Promise<{id: string, webViewLink?: string}> => {
   if (!accessToken) throw new Error("Not authenticated");
 
   const folderId = await ensureFolderHierarchy(folderName);
 
-  const metadata = {
+  const metadata: any = {
     name: filename,
     parents: [folderId],
-    mimeType: mimeType, // MIME type for the file itself (e.g. 'audio/webm' or 'text/markdown')
   };
+
+  // If we are uploading text and want it to be a Google Doc
+  if (convertToGoogleDoc) {
+      metadata.mimeType = 'application/vnd.google-apps.document';
+  } else {
+      metadata.mimeType = mimeType;
+  }
 
   const fileContent = typeof content === 'string' ? new Blob([content], { type: mimeType }) : content;
   
@@ -156,10 +205,14 @@ export const uploadAudioToDrive = async (filename: string, audioBlob: Blob): Pro
     // Determine extension based on blob type if possible, otherwise default to .webm
     const ext = audioBlob.type.includes('mp4') ? '.mp4' : '.webm';
     const finalName = filename.endsWith(ext) ? filename : `${filename}${ext}`;
-    return uploadFileToDrive(finalName, audioBlob, audioBlob.type, 'Audio');
+    return uploadFileToDrive(finalName, audioBlob, audioBlob.type, 'Audio', false);
 };
 
-// Wrapper for Text (Notes/Transcripts)
+// Wrapper for Text (Notes/Transcripts) -> Converted to Google Doc
 export const uploadTextToDrive = async (filename: string, content: string, subFolder: 'Notes' | 'Transcripts'): Promise<{id: string, webViewLink?: string}> => {
-    return uploadFileToDrive(filename, content, 'text/markdown', subFolder);
+    // 1. Convert Markdown to HTML so Google Drive parses formatting correctly
+    const htmlContent = convertMarkdownToHtml(content);
+    
+    // 2. Upload with conversion flag set to true
+    return uploadFileToDrive(filename, htmlContent, 'text/html', subFolder, true);
 };

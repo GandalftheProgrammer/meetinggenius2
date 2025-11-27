@@ -24,6 +24,9 @@ const App: React.FC = () => {
   // Processing State
   const [isGeneratingMissing, setIsGeneratingMissing] = useState(false);
   
+  // Upload State (To prevent re-saving uploaded files)
+  const [isUploadedFile, setIsUploadedFile] = useState(false);
+  
   // Drive State
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   
@@ -97,6 +100,9 @@ const App: React.FC = () => {
       const url = URL.createObjectURL(file);
       setAudioUrl(url);
       
+      // Mark as uploaded so we don't save it to Drive again
+      setIsUploadedFile(true);
+      
       setAppState(AppState.PAUSED);
       addLog(`File Uploaded: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
       
@@ -109,6 +115,9 @@ const App: React.FC = () => {
 
   const handleRecordingChange = (isRecording: boolean) => {
     if (isRecording) {
+      // If we start a new recording, reset the uploaded flag
+      setIsUploadedFile(false);
+      
       if (appState !== AppState.RECORDING) {
         setAppState(AppState.RECORDING);
         // Clear previous uploads if starting fresh recording
@@ -173,14 +182,15 @@ const App: React.FC = () => {
         // Upload Notes if they exist
         if (data.summary) {
             const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions & Insights\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
-            const result = await uploadTextToDrive(`${safeTitle}_notes.md`, notesContent, 'Notes');
+            // NOTE: We don't add extension here, driveService will handle conversion to Google Doc
+            const result = await uploadTextToDrive(`${safeTitle}_notes`, notesContent, 'Notes');
             if (result.webViewLink) addLog(`Notes saved: ${result.webViewLink}`);
         }
 
         // Upload Transcript if it exists
         if (data.transcription) {
             const transcriptContent = `# Transcription: ${currentTitle}\n\n${data.transcription}`;
-            const result = await uploadTextToDrive(`${safeTitle}_transcript.md`, transcriptContent, 'Transcripts');
+            const result = await uploadTextToDrive(`${safeTitle}_transcript`, transcriptContent, 'Transcripts');
             if (result.webViewLink) addLog(`Transcript saved: ${result.webViewLink}`);
         }
     } catch (err) {
@@ -203,8 +213,13 @@ const App: React.FC = () => {
       setIsGeneratingMissing(true);
     } else {
       setAppState(AppState.PROCESSING);
-      // Trigger Audio Backup immediately when processing starts (Fire & Forget)
-      saveAudioBackup(combinedBlob, currentTitle);
+      
+      // ONLY backup audio if it was RECORDED live. Skipped for uploaded files.
+      if (!isUploadedFile) {
+        saveAudioBackup(combinedBlob, currentTitle);
+      } else {
+        addLog("Skipping audio backup (File was uploaded)");
+      }
     }
     
     try {
@@ -255,6 +270,7 @@ const App: React.FC = () => {
     setTitle("");
     setError(null);
     setIsGeneratingMissing(false);
+    setIsUploadedFile(false); // Reset upload flag
   };
 
   return (
