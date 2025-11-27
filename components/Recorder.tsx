@@ -45,7 +45,6 @@ const Recorder: React.FC<RecorderProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   
   // Silent Audio Player Ref
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -69,11 +68,6 @@ const Recorder: React.FC<RecorderProps> = ({
     // Handle visibility change to re-acquire resources if dropped
     const handleVisibilityChange = async () => {
         if (document.visibilityState === 'visible') {
-            // Re-acquire Wake Lock if recording
-            if (isRecording) {
-                // Don't await this to avoid blocking any UI thread operations
-                requestWakeLock();
-            }
             // Resume Audio Context if suspended
             if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
                 audioContextRef.current.resume();
@@ -86,43 +80,12 @@ const Recorder: React.FC<RecorderProps> = ({
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       cleanupResources();
-      releaseWakeLock();
       if (silentAudioRef.current) {
           silentAudioRef.current.pause();
           silentAudioRef.current = null;
       }
     };
   }, [isRecording]);
-
-  const requestWakeLock = async () => {
-    if ('wakeLock' in navigator) {
-        try {
-            const sentinel = await navigator.wakeLock.request('screen');
-            wakeLockRef.current = sentinel;
-            
-            // Add listener to handle involuntary release (e.g. system timeout)
-            sentinel.addEventListener('release', () => {
-                // We reset the ref so we know we need to re-acquire it later (e.g. on visibility change)
-                if (wakeLockRef.current === sentinel) {
-                    wakeLockRef.current = null;
-                }
-            });
-        } catch (err: any) {
-            console.log(`Wake Lock error: ${err.message}`);
-        }
-    }
-  };
-
-  const releaseWakeLock = async () => {
-      if (wakeLockRef.current) {
-          try {
-            await wakeLockRef.current.release();
-            wakeLockRef.current = null;
-          } catch (e) {
-              console.log("Wake lock release error", e);
-          }
-      }
-  };
 
   const cleanupResources = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -155,12 +118,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
   const startRecording = async () => {
     try {
-      // 1. Request Wake Lock (Keep screen on)
-      // CRITICAL: Do NOT await this. Awaiting can block the UI or cause "user gesture" 
-      // expiration for subsequent audio APIs on some mobile browsers (iOS).
-      requestWakeLock().catch(e => console.log("Wake Lock start failed", e));
-
-      // 2. Attempt Silent Loop Hack (Fail-safe)
+      // Attempt Silent Loop Hack (Fail-safe)
       // Execute immediately to latch onto the user gesture
       if (silentAudioRef.current) {
           silentAudioRef.current.play().catch(err => {
@@ -186,7 +144,6 @@ const Recorder: React.FC<RecorderProps> = ({
             alert("No audio shared! Please ensure you check the 'Share tab audio' box.");
             displayStream.getTracks().forEach(t => t.stop());
             if (silentAudioRef.current) silentAudioRef.current.pause();
-            await releaseWakeLock();
             return;
           }
 
@@ -214,7 +171,6 @@ const Recorder: React.FC<RecorderProps> = ({
         } catch (err) {
           console.error("Error setting up mixed audio:", err);
           if (silentAudioRef.current) silentAudioRef.current.pause();
-          await releaseWakeLock();
           return; 
         }
       } else {
@@ -260,7 +216,6 @@ const Recorder: React.FC<RecorderProps> = ({
       console.error("Error accessing audio:", error);
       alert("Could not access audio device. Please check permissions.");
       if (silentAudioRef.current) silentAudioRef.current.pause();
-      await releaseWakeLock();
     }
   };
 
@@ -269,9 +224,6 @@ const Recorder: React.FC<RecorderProps> = ({
       mediaRecorderRef.current.stop();
       cleanupResources();
       
-      // Stop Wake Lock
-      await releaseWakeLock();
-
       // Stop the Silent Loop
       if (silentAudioRef.current) {
           silentAudioRef.current.pause();
@@ -403,7 +355,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
       {isMobile && !isRecording && (
          <div className="mb-6 text-center">
-           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized (Screen Wake Lock & Background)</span>
+           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile optimized</span>
          </div>
       )}
 
