@@ -39,7 +39,9 @@ export const processMeetingAudio = async (
     log("Step 1: Upload URL received.");
 
     // 2. Direct Upload Loop (Browser -> Google)
-    // We use the Standard PUT + Content-Range Protocol
+    // STRATEGY: Header-Based Protocol (POST)
+    // We used this before and it worked for chunks 1-3. 
+    // We now use it for ALL chunks, relying on Auto-Finalization for the last one.
     
     const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
     let offset = 0;
@@ -49,47 +51,33 @@ export const processMeetingAudio = async (
 
     while (offset < totalBytes) {
         const chunkEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
-        
-        // SLICE WITH EMPTY TYPE:
-        // We pass '' as the content type to the slice.
-        // This prevents the browser from automatically adding a 'Content-Type: audio/webm' header.
-        // Since the server already knows the type from the handshake, this reduces CORS complexity.
-        const chunkBlob = audioBlob.slice(offset, chunkEnd, '');
-        
+        const chunkBlob = audioBlob.slice(offset, chunkEnd, ''); // Empty type to avoid auto-headers
         const isLastChunk = chunkEnd === totalBytes;
         
-        // Calculate standard Range header: bytes start-end/total
-        // Note: range end is inclusive, slice end is exclusive
-        const rangeEnd = chunkEnd - 1;
-        const contentRange = `bytes ${offset}-${rangeEnd}/${totalBytes}`;
-        
+        // We track progress for UI
         const progress = Math.round((chunkEnd / totalBytes) * 100);
-        log(`Uploading chunk: ${offset} - ${rangeEnd} / ${totalBytes} (${progress}%)`);
+        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${progress}%)`);
 
-        // Prepare headers explicitly
-        // CRITICAL FIX: DO NOT SET Content-Length manually. The browser sets it.
+        // Protocol: Always use 'upload'. 
+        // Server knows total size from handshake, so it auto-finalizes on last byte.
         const headers: Record<string, string> = {
-            'Content-Range': contentRange
+            'X-Goog-Upload-Command': 'upload',
+            'X-Goog-Upload-Offset': offset.toString()
         };
         
-        // Log basic info
+        // Debug headers
         log(`Headers: ${JSON.stringify(headers)}`);
 
         try {
             const response = await fetch(uploadUrl, {
-                method: 'PUT',
+                method: 'POST', // POST is standard for Command protocol
                 headers: headers,
                 body: chunkBlob
             });
 
             log(`Chunk Response Status: ${response.status} ${response.statusText}`);
 
-            // Google returns 308 Resume Incomplete for intermediate chunks
-            // Google returns 200 OK (or 201) for the final chunk
-            const isResumeIncomplete = response.status === 308;
-            const isComplete = response.status === 200 || response.status === 201;
-
-            if (!isResumeIncomplete && !isComplete) {
+            if (!response.ok) {
                 const errorText = await response.text();
                 throw new Error(`Chunk Upload Failed [${response.status}]: ${errorText}`);
             }
@@ -104,7 +92,6 @@ export const processMeetingAudio = async (
                     if (result.file && result.file.uri) {
                         fileUri = result.file.uri;
                     } else if (result.uri) {
-                         // Fallback structure
                         fileUri = result.uri;
                     }
                     
@@ -115,16 +102,36 @@ export const processMeetingAudio = async (
                     }
                 } catch (jsonErr) {
                     console.error("JSON Parse Error on Final Chunk:", jsonErr);
-                    // sometimes server returns text?
                     throw new Error("Failed to parse final response from Google.");
                 }
             }
         } catch (fetchErr: any) {
             log(`Network/Fetch Error on chunk starting at ${offset}: ${fetchErr.message}`);
             if (fetchErr.message === 'Failed to fetch') {
-                log("Suggestion: This often indicates a CORS Preflight failure or forbidden header (like Content-Length).");
+                log("Suggestion: CORS Preflight failure. Retrying chunk once...");
+                // Simple 1-time retry for the chunk
+                try {
+                    await new Promise(r => setTimeout(r, 1000));
+                    log(`Retrying chunk ${offset}...`);
+                    const retryResponse = await fetch(uploadUrl, {
+                        method: 'POST',
+                        headers: headers,
+                        body: chunkBlob
+                    });
+                    if (!retryResponse.ok) throw new Error("Retry failed");
+                    if (isLastChunk) {
+                        const result = await retryResponse.json();
+                        if (result.file?.uri) fileUri = result.file.uri;
+                        else if (result.uri) fileUri = result.uri;
+                    }
+                    log("Retry successful!");
+                } catch (retryErr) {
+                    log("Retry failed.");
+                    throw fetchErr; // Throw original
+                }
+            } else {
+                throw fetchErr;
             }
-            throw fetchErr;
         }
 
         offset += CHUNK_SIZE;
