@@ -274,23 +274,25 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
 
     const systemInstruction = `You are an expert meeting secretary.
     1. Detect the language of the audio and write the output in that same language.
-    2. If the audio is silent or contains only noise, return a valid JSON with empty fields, do not return an error.
-    3. Action items must be EXPLICIT tasks only.
+    2. If the audio is silent or contains only noise, return a valid JSON with empty fields.
+    3. Action items must be EXPLICIT tasks only assigned to specific people if mentioned.
+    4. The Summary must be DETAILED and COMPREHENSIVE. Do not over-summarize; capture the nuance of the discussion, key arguments, and context.
+    5. Conclusions & Insights should be extensive, capturing all decisions, agreed points, and important observations made during the meeting.
     
     STRICT OUTPUT FORMAT:
     You MUST return a raw JSON object (no markdown code blocks) with the following schema:
     {
       "transcription": "The full verbatim transcript...",
-      "summary": "A concise summary...",
-      "conclusions": ["Conclusion 1", "Conclusion 2"],
+      "summary": "A detailed and comprehensive summary of the meeting...",
+      "conclusions": ["Detailed conclusion 1", "Detailed insight 2", "Decision 3"],
       "actionItems": ["Task 1", "Task 2"]
     }
     `;
 
     let taskInstruction = "";
     if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe the audio verbatim. Leave summary/conclusions/actionItems empty.";
-    else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes (summary, conclusions, actionItems). Leave transcription empty.";
-    else taskInstruction = "Transcribe the audio verbatim AND create structured notes.";
+    else if (mode === 'NOTES_ONLY') taskInstruction = "Create detailed structured notes (summary, conclusions, actionItems). Leave transcription empty.";
+    else taskInstruction = "Transcribe the audio verbatim AND create detailed structured notes.";
 
     const payload = {
         contents: [
