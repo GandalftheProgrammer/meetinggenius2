@@ -273,11 +273,12 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodedKey}`;
 
     const systemInstruction = `You are an expert meeting secretary.
-    1. Detect the language of the audio and write the output in that same language.
-    2. If the audio is silent or contains only noise, return a valid JSON with empty fields.
-    3. Action items must be EXPLICIT tasks only assigned to specific people if mentioned.
-    4. The Summary must be DETAILED and COMPREHENSIVE. Do not over-summarize; capture the nuance of the discussion, key arguments, and context.
-    5. Conclusions & Insights should be extensive, capturing all decisions, agreed points, and important observations made during the meeting.
+    1. CRITICAL: Analyze the audio to detect the primary spoken language.
+    2. CRITICAL: All output (transcription, summary, conclusions, action items) MUST be written in the DETECTED LANGUAGE. Do not translate to English unless the audio is in English.
+    3. If the audio is silent or contains only noise, return a valid JSON with empty fields.
+    4. Action items must be EXPLICIT tasks only assigned to specific people if mentioned.
+    5. The Summary must be DETAILED and COMPREHENSIVE. Do not over-summarize; capture the nuance of the discussion, key arguments, and context.
+    6. Conclusions & Insights should be extensive, capturing all decisions, agreed points, and important observations made during the meeting.
     
     STRICT OUTPUT FORMAT:
     You MUST return a raw JSON object (no markdown code blocks) with the following schema:
@@ -290,9 +291,9 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
     `;
 
     let taskInstruction = "";
-    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe the audio verbatim. Leave summary/conclusions/actionItems empty.";
-    else if (mode === 'NOTES_ONLY') taskInstruction = "Create detailed structured notes (summary, conclusions, actionItems). Leave transcription empty.";
-    else taskInstruction = "Transcribe the audio verbatim AND create detailed structured notes.";
+    if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe the audio verbatim in the spoken language. Leave summary/conclusions/actionItems empty.";
+    else if (mode === 'NOTES_ONLY') taskInstruction = "Create detailed structured notes (summary, conclusions, actionItems) in the spoken language. Leave transcription empty.";
+    else taskInstruction = "Transcribe the audio verbatim AND create detailed structured notes in the spoken language.";
 
     const payload = {
         contents: [
