@@ -27,6 +27,10 @@ const App: React.FC = () => {
   // Upload State (To prevent re-saving uploaded files)
   const [isUploadedFile, setIsUploadedFile] = useState(false);
   
+  // Date State for Timestamping
+  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
+  const [uploadedFileDate, setUploadedFileDate] = useState<Date | null>(null);
+  
   // Drive State
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   
@@ -102,6 +106,8 @@ const App: React.FC = () => {
       
       // Mark as uploaded so we don't save it to Drive again
       setIsUploadedFile(true);
+      // Capture the file's last modified date for accurate timestamping
+      setUploadedFileDate(new Date(file.lastModified));
       
       setAppState(AppState.PAUSED);
       addLog(`File Uploaded: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
@@ -115,6 +121,9 @@ const App: React.FC = () => {
 
   const handleRecordingChange = (isRecording: boolean) => {
     if (isRecording) {
+      // Capture the exact start time of the recording for timestamping
+      setRecordingStartTime(new Date());
+
       // If we start a new recording, reset the uploaded flag
       setIsUploadedFile(false);
       
@@ -148,6 +157,15 @@ const App: React.FC = () => {
     }
   };
 
+  const getFormattedDateTime = (dateInput?: Date) => {
+      const now = dateInput || new Date();
+      // Format: 25 November 2025
+      const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+      // Format: 14:11:00
+      const timePart = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      return `${datePart} at ${timePart}`;
+  };
+
   // Manual Save Trigger (Passed to Results component)
   const handleManualAudioSave = async () => {
       if (!combinedBlob) {
@@ -161,7 +179,15 @@ const App: React.FC = () => {
       
       let currentTitle = title.trim();
       if (!currentTitle) {
-           const now = getFormattedDateTime();
+           // Determine date source
+           let baseDate = new Date();
+           if (isUploadedFile && uploadedFileDate) {
+               baseDate = uploadedFileDate;
+           } else if (!isUploadedFile && recordingStartTime) {
+               baseDate = recordingStartTime;
+           }
+           
+           const now = getFormattedDateTime(baseDate);
            currentTitle = `Meeting ${now}`;
       }
       
@@ -197,20 +223,22 @@ const App: React.FC = () => {
     }
   };
 
-  const getFormattedDateTime = () => {
-      const now = new Date();
-      // Format: 25 November 2025
-      const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-      // Format: 14:11:00
-      const timePart = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-      return `${datePart} at ${timePart}`;
-  };
-
   const handleProcessAudio = async (mode: ProcessingMode) => {
     if (!combinedBlob) return;
 
+    // Determine the correct date source
+    // Uploaded File -> Use File's Last Modified Date
+    // Recording -> Use the time recording started
+    // Fallback -> Current Time
+    let baseDate = new Date();
+    if (isUploadedFile && uploadedFileDate) {
+        baseDate = uploadedFileDate;
+    } else if (!isUploadedFile && recordingStartTime) {
+        baseDate = recordingStartTime;
+    }
+
     // Apply strict date formatting to the title
-    const timestamp = getFormattedDateTime();
+    const timestamp = getFormattedDateTime(baseDate);
     let currentTitle = title.trim();
     
     if (!currentTitle) {
@@ -289,6 +317,8 @@ const App: React.FC = () => {
     setError(null);
     setIsGeneratingMissing(false);
     setIsUploadedFile(false); // Reset upload flag
+    setRecordingStartTime(null);
+    setUploadedFileDate(null);
   };
 
   return (
