@@ -115,19 +115,20 @@ export const processMeetingAudio = async (
             } 
             else if (data.status === 'ERROR') {
                 let errMsg = data.error || "Unknown Server Error";
-                // Only try to parse if it looks like a JSON object error
+                // Try to parse JSON errors
                 try {
                     if (errMsg.startsWith('{')) {
                          const jsonError = JSON.parse(errMsg);
                          if (jsonError.error && jsonError.error.message) {
                              errMsg = `${jsonError.error.message} (Code: ${jsonError.error.code})`;
                          }
-                    } else if (errMsg.trim().startsWith('<')) {
+                    } else if (errMsg.trim().toLowerCase().startsWith('<!doctype html') || errMsg.includes('<html')) {
                         // Detect HTML error page (common with 401/403/500 from Google LBs)
                         const parser = new DOMParser();
                         const doc = parser.parseFromString(errMsg, 'text/html');
                         const title = doc.querySelector('title')?.innerText || "HTML Error Page";
-                        errMsg = `Received HTML Error: ${title}. Check Key restrictions.`;
+                        const body = doc.body?.innerText?.substring(0, 100).replace(/\n/g, ' ') || "";
+                        errMsg = `Received HTML Error: "${title}" - ${body}`;
                     }
                 } catch (e) {
                     // Keep original errMsg if parse fails
@@ -179,36 +180,62 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
+    let transcription = "";
+    let summary = "";
+    let conclusions: string[] = [];
+    let actionItems: string[] = [];
+
+    // Attempt to parse JSON
     try {
         const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
         const firstBrace = cleanText.indexOf('{');
         const lastBrace = cleanText.lastIndexOf('}');
         
-        if (firstBrace === -1 || lastBrace === -1) {
-             return {
-                 transcription: jsonText,
-                 summary: "Raw text received",
-                 conclusions: [],
-                 actionItems: []
-             };
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            const jsonOnly = cleanText.substring(firstBrace, lastBrace + 1);
+            const rawData = JSON.parse(jsonOnly);
+            
+            transcription = rawData.transcription || "";
+            summary = rawData.summary || "";
+            conclusions = rawData.conclusions || rawData.decisions || [];
+            actionItems = rawData.actionItems || [];
+        } else {
+            // Not a JSON object, might be raw text
+            throw new Error("Not JSON");
         }
-        
-        const jsonOnly = cleanText.substring(firstBrace, lastBrace + 1);
-        const rawData = JSON.parse(jsonOnly);
-        
-        return {
-            transcription: rawData.transcription || "",
-            summary: rawData.summary || "",
-            conclusions: rawData.conclusions || rawData.decisions || [], 
-            actionItems: rawData.actionItems || [],
-        };
     } catch (e) {
-        console.error("Failed to parse inner JSON structure", e);
-        return {
-            transcription: jsonText, 
-            summary: "Error parsing structured notes.",
-            conclusions: [],
-            actionItems: []
-        };
+        // Fallback Logic based on requested Mode
+        if (mode === 'TRANSCRIPT_ONLY') {
+            // If we only asked for a transcript, assume the raw text IS the transcript
+            transcription = jsonText;
+            summary = ""; // Ensure summary is empty so UI doesn't show "Error"
+        } else if (mode === 'NOTES_ONLY') {
+            // If we asked for notes but got raw text, put it in summary? 
+            // Or maybe it failed completely. Let's put it in summary for safety.
+            summary = jsonText;
+            transcription = "";
+        } else {
+            // ALL mode failed to parse JSON
+            transcription = jsonText;
+            summary = "Error parsing structured notes.";
+        }
     }
+
+    // Force Cleanup based on Mode (Double check)
+    // This ensures that if we run 'NOTES_ONLY', we don't accidentally return an empty transcript
+    // that overwrites an existing transcript in the main App state (although App.tsx handles ||, it's safer here)
+    if (mode === 'TRANSCRIPT_ONLY') {
+        summary = "";
+        conclusions = [];
+        actionItems = [];
+    }
+    // Note: We don't clear transcription for NOTES_ONLY because usually NOTES_ONLY returns a summary 
+    // but implies the transcript was already there or not needed.
+
+    return {
+        transcription,
+        summary,
+        conclusions,
+        actionItems,
+    };
 }

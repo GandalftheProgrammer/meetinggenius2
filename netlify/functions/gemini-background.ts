@@ -1,8 +1,19 @@
+
 import { getStore } from "@netlify/blobs";
 import { Buffer } from "node:buffer";
 
 // NETLIFY BACKGROUND FUNCTION
 // Reads chunks from storage, stitches them to 8MB, uploads to Gemini via REST API, and processes.
+
+// Define smart fallback sequences for models to handle 503 Overloads
+const FALLBACK_CHAINS: Record<string, string[]> = {
+    'gemini-3-pro-preview': ['gemini-3-pro-preview', 'gemini-2.0-flash', 'gemini-2.5-flash'],
+    'gemini-2.5-pro': ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-2.5-flash'],
+    'gemini-2.5-flash': ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'],
+    'gemini-2.5-flash-lite': ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'],
+    'gemini-2.0-flash': ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    'gemini-2.0-flash-lite': ['gemini-2.0-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
+};
 
 export default async (req: Request) => {
   if (req.method !== 'POST') return new Response("OK");
@@ -180,9 +191,37 @@ export default async (req: Request) => {
     await updateStatus("Checkpoint 4: Waiting for File Processing...");
     await waitForFileActive(fileUri, encodedKey);
 
-    // --- 5. GENERATE CONTENT (RAW REST) ---
+    // --- 5. GENERATE CONTENT (RAW REST WITH SMART FALLBACK) ---
     await updateStatus("Checkpoint 5: Generating Content...");
-    const resultText = await generateContentREST(fileUri, mimeType, mode, model, encodedKey);
+    
+    // Determine the chain of models to try
+    const modelsToTry = FALLBACK_CHAINS[model] || [model];
+    let resultText = "";
+    let generationSuccess = false;
+
+    console.log(`[Background] Model Strategy: ${modelsToTry.join(' -> ')}`);
+
+    for (const currentModel of modelsToTry) {
+        try {
+            if (currentModel !== model) {
+                console.log(`[Background] Switching to fallback model: ${currentModel}`);
+            }
+            resultText = await generateContentREST(fileUri, mimeType, mode, currentModel, encodedKey);
+            generationSuccess = true;
+            break; // Success! Exit fallback loop
+        } catch (e: any) {
+            console.warn(`[Background] Failed with model ${currentModel}: ${e.message}`);
+            // Check if error is transient (503/429) to decide whether to continue chain
+            if (e.message.includes('503') || e.message.includes('429')) {
+                continue; // Try next model
+            }
+            throw e; // Fatal error (e.g. 400 Invalid Argument), don't try other models
+        }
+    }
+
+    if (!generationSuccess) {
+        throw new Error(`Generation failed with all attempted models: ${modelsToTry.join(', ')}`);
+    }
 
     // Save Result
     await resultStore.setJSON(jobId, { status: 'COMPLETED', result: resultText });
@@ -200,13 +239,10 @@ export default async (req: Request) => {
         }
     } catch (e) {}
 
-    // 2. Add API Key Debug Info
-    const keyPrefix = apiKey ? apiKey.substring(0, 4) : "NONE";
-    const keySuffix = apiKey ? apiKey.substring(apiKey.length - 4) : "NONE";
-    const keyDebug = `[Key: ${keyPrefix}...${keySuffix}, Len: ${apiKey.length}]`;
-
+    // 2. Add API Key Debug Info REMOVED FOR SECURITY as auth is resolved.
+    
     // 3. Construct Final User Message
-    const finalError = `${errorMessage} ${keyDebug}`;
+    const finalError = `${errorMessage}`;
 
     const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
     await resultStore.setJSON(jobId, { status: 'ERROR', error: finalError });
@@ -238,7 +274,7 @@ async function waitForFileActive(fileUri: string, encodedKey: string) {
     throw new Error("Timeout waiting for file to become ACTIVE");
 }
 
-async function generateContentREST(fileUri: string, mimeType: string, mode: string, model: string, encodedKey: string) {
+async function generateContentREST(fileUri: string, mimeType: string, mode: string, model: string, encodedKey: string): Promise<string> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodedKey}`;
 
     const systemInstruction = `You are an expert meeting secretary.
@@ -252,7 +288,6 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
     else if (mode === 'NOTES_ONLY') taskInstruction = "Create structured notes.";
     else taskInstruction = "Transcribe verbatim AND create structured notes.";
 
-    // Note: REST API uses snake_case for keys
     const payload = {
         contents: [
             {
@@ -271,19 +306,53 @@ async function generateContentREST(fileUri: string, mimeType: string, mode: stri
         }
     };
 
-    const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
+    // Retry Loop for 503/429 Errors for a SINGLE model
+    // We limit this to 2 retries per model to ensure we failover to the next model in the chain quickly
+    let attempts = 0;
+    const maxRetries = 2;
+    
+    while (attempts <= maxRetries) {
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
 
-    if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(`Generation Failed (${resp.status}): ${errText}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                return text || "{}";
+            }
+
+            // Handle Retriable Errors
+            if (resp.status === 503 || resp.status === 429) {
+                attempts++;
+                if (attempts > maxRetries) {
+                    throw new Error(`Model ${model} Overloaded (503)`);
+                }
+                
+                const delay = 1000 * attempts; // Fast retry: 1s, 2s
+                console.warn(`[Background] ${model} Overloaded (${resp.status}). Retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
+
+            // Fatal Error
+            const errText = await resp.text();
+            throw new Error(`Generation Failed (${resp.status}): ${errText}`);
+
+        } catch (e: any) {
+            // Re-throw if it's our own status error
+            if (e.message.includes("Overloaded") || e.message.includes("Generation Failed")) throw e;
+            
+            attempts++;
+            if (attempts > maxRetries) throw e;
+            
+            console.warn(`[Background] Network Error with ${model}: ${e.message}. Retrying...`);
+            await new Promise(r => setTimeout(r, 1000));
+        }
     }
-
-    const data = await resp.json();
-    // REST API response structure
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    return text || "{}";
+    
+    throw new Error("Unexpected loop exit");
 }
