@@ -9,12 +9,19 @@ export default async (req: Request) => {
   if (req.method !== 'POST') return new Response("OK");
 
   // FIX: Trim whitespace from API Key. Trailing newlines cause 401s in raw fetch calls.
-  const apiKey = process.env.API_KEY ? process.env.API_KEY.trim() : "";
+  // FIX: Remove any surrounding quotes if they exist in the env var string
+  let apiKey = process.env.API_KEY ? process.env.API_KEY.trim() : "";
+  if (apiKey.startsWith('"') && apiKey.endsWith('"')) {
+      apiKey = apiKey.slice(1, -1);
+  }
   
   if (!apiKey) {
       console.error("API_KEY missing");
       return;
   }
+
+  // ENCODE KEY: Ensure no special characters break URL parameters
+  const encodedKey = encodeURIComponent(apiKey);
 
   let jobId: string = "";
 
@@ -35,20 +42,39 @@ export default async (req: Request) => {
     // Helper to update status
     const updateStatus = async (msg: string) => {
         console.log(`[Background] ${msg}`);
-        // We only update the store if needed, mostly we just log to console which Netlify captures
     };
+
+    // --- 0. PRE-FLIGHT CONNECTIVITY TEST ---
+    // This verifies if the API Key works in this server environment (checking for Referrer/IP restrictions)
+    await updateStatus("Checkpoint 0: Validating API Key Permissions...");
+    try {
+        const testAi = new GoogleGenAI({ apiKey });
+        // Simple fast test
+        await testAi.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: 'ping',
+        });
+        console.log("[Background] API Key is valid and working.");
+    } catch (testErr: any) {
+        console.error(`[Background] API Key Validation Failed: ${testErr.message}`);
+        throw new Error(`API Key Rejected by Google in Server Environment (Code: 401). CAUSE: Likely 'HTTP Referrer' restrictions in Google Cloud Console. Server requests have no referrer. FIX: Remove restrictions or use a separate Server Key.`);
+    }
 
     // --- 1. INITIALIZE GEMINI UPLOAD ---
     await updateStatus("Checkpoint 1: Initializing Resumable Upload...");
     
-    const initResp = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`, {
+    // Explicitly append key to the URL for the handshake
+    const handshakeUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodedKey}`;
+
+    const initResp = await fetch(handshakeUrl, {
         method: 'POST',
         headers: {
             'X-Goog-Upload-Protocol': 'resumable',
             'X-Goog-Upload-Command': 'start',
             'X-Goog-Upload-Header-Content-Length': String(fileSize),
             'X-Goog-Upload-Header-Content-Type': mimeType,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey // Redundant Auth Header
         },
         body: JSON.stringify({ file: { display_name: `Meeting_${jobId}` } })
     });
@@ -65,7 +91,7 @@ export default async (req: Request) => {
     // We must manually append it to ensure subsequent PUT/POST requests are authenticated.
     if (!uploadUrl.includes('key=')) {
         const separator = uploadUrl.includes('?') ? '&' : '?';
-        uploadUrl = `${uploadUrl}${separator}key=${apiKey}`;
+        uploadUrl = `${uploadUrl}${separator}key=${encodedKey}`;
     }
 
     // --- 2. STITCH & UPLOAD CHUNKS ---
@@ -79,7 +105,7 @@ export default async (req: Request) => {
         // Read Chunk from Storage
         const chunkKey = `${jobId}/${i}`;
         // Explicitly cast to string because get() can return Blob/ArrayBuffer which Buffer.from doesn't accept with encoding
-        const chunkBase64 = await uploadStore.get(chunkKey) as unknown as string;
+        const chunkBase64 = await uploadStore.get(chunkKey, { type: 'text' });
         
         if (!chunkBase64) throw new Error(`Missing chunk ${i} in storage`);
         
@@ -102,7 +128,9 @@ export default async (req: Request) => {
                 headers: {
                     'Content-Length': String(GEMINI_CHUNK_SIZE),
                     'X-Goog-Upload-Command': 'upload',
-                    'X-Goog-Upload-Offset': String(uploadOffset)
+                    'X-Goog-Upload-Offset': String(uploadOffset),
+                    'x-goog-api-key': apiKey, // Redundant Auth Header
+                    'Content-Type': 'application/octet-stream' // Required for binary data
                 },
                 body: chunkToSend
             });
@@ -127,7 +155,9 @@ export default async (req: Request) => {
         headers: {
             'Content-Length': String(finalSize),
             'X-Goog-Upload-Command': 'upload, finalize',
-            'X-Goog-Upload-Offset': String(uploadOffset)
+            'X-Goog-Upload-Offset': String(uploadOffset),
+            'x-goog-api-key': apiKey, // Redundant Auth Header
+            'Content-Type': 'application/octet-stream'
         },
         body: buffer
     });
@@ -144,7 +174,7 @@ export default async (req: Request) => {
 
     // --- 4. WAIT FOR ACTIVE ---
     await updateStatus("Checkpoint 4: Waiting for File Processing...");
-    await waitForFileActive(fileUri, apiKey);
+    await waitForFileActive(fileUri, encodedKey);
 
     // --- 5. GENERATE CONTENT ---
     await updateStatus("Checkpoint 5: Generating Content...");
@@ -167,23 +197,23 @@ export default async (req: Request) => {
     } catch (e) {}
 
     // 2. Add API Key Debug Info
-    const keyDebug = apiKey && apiKey.length > 10 
-        ? `[API Key: ${apiKey.slice(0, 4)}...${apiKey.slice(-4)}, Len: ${apiKey.length}]`
-        : `[API Key: Invalid/Missing]`;
+    const keyPrefix = apiKey ? apiKey.substring(0, 4) : "NONE";
+    const keySuffix = apiKey ? apiKey.substring(apiKey.length - 4) : "NONE";
+    const keyDebug = `[Key: ${keyPrefix}...${keySuffix}, Len: ${apiKey.length}]`;
 
     // 3. Construct Final User Message
-    const finalError = `${errorMessage}. ${keyDebug}. NOTE: If this is 401, check Google Console > API Keys > Application Restrictions. Server-side requests are blocked by "HTTP Referrer" restrictions.`;
+    const finalError = `${errorMessage} ${keyDebug}`;
 
     const resultStore = getStore({ name: "meeting-results", consistency: "strong" });
     await resultStore.setJSON(jobId, { status: 'ERROR', error: finalError });
   }
 };
 
-async function waitForFileActive(fileUri: string, apiKey: string) {
+async function waitForFileActive(fileUri: string, encodedKey: string) {
     let attempts = 0;
     while (attempts < 60) {
         // Appending key is crucial here too
-        const r = await fetch(`${fileUri}?key=${apiKey}`);
+        const r = await fetch(`${fileUri}?key=${encodedKey}`);
         
         if (!r.ok) {
              if (r.status === 404) throw new Error("File not found during polling");

@@ -114,14 +114,18 @@ export const processMeetingAudio = async (
                 return parseResponse(data.result, mode);
             } 
             else if (data.status === 'ERROR') {
-                // Try to make the error message cleaner
-                let errMsg = data.error;
+                let errMsg = data.error || "Unknown Server Error";
+                // Only try to parse if it looks like a JSON object error
                 try {
-                    const jsonError = JSON.parse(errMsg);
-                    if (jsonError.error && jsonError.error.message) {
-                        errMsg = `${jsonError.error.message} (Code: ${jsonError.error.code})`;
+                    if (errMsg.startsWith('{')) {
+                         const jsonError = JSON.parse(errMsg);
+                         if (jsonError.error && jsonError.error.message) {
+                             errMsg = `${jsonError.error.message} (Code: ${jsonError.error.code})`;
+                         }
                     }
-                } catch (e) {}
+                } catch (e) {
+                    // Keep original errMsg if parse fails
+                }
                 
                 throw new Error(`Processing Error: ${errMsg}`);
             }
