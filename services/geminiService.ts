@@ -39,7 +39,7 @@ export const processMeetingAudio = async (
     log("Step 1: Upload URL received.");
 
     // 2. Direct Upload Loop (Browser -> Google)
-    // We use the Header-Based Resumable Upload Protocol (Option B Variant)
+    // We use the Standard PUT + Content-Range Protocol
     
     const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB
     let offset = 0;
@@ -52,31 +52,38 @@ export const processMeetingAudio = async (
         const chunkBlob = audioBlob.slice(offset, chunkEnd);
         const isLastChunk = chunkEnd === totalBytes;
         
-        // Strict command logic
-        const command = isLastChunk ? 'upload, finalize' : 'upload';
+        // Calculate standard Range header: bytes start-end/total
+        // Note: range end is inclusive, slice end is exclusive
+        const rangeEnd = chunkEnd - 1;
+        const contentRange = `bytes ${offset}-${rangeEnd}/${totalBytes}`;
         
         const progress = Math.round((chunkEnd / totalBytes) * 100);
-        log(`Uploading chunk: ${offset} - ${chunkEnd} / ${totalBytes} (${progress}%) [${command}]`);
+        log(`Uploading chunk: ${offset} - ${rangeEnd} / ${totalBytes} (${progress}%)`);
 
         // Prepare headers explicitly
         const headers: Record<string, string> = {
             'Content-Length': chunkBlob.size.toString(),
-            'X-Goog-Upload-Offset': offset.toString(),
-            'X-Goog-Upload-Command': command
+            'Content-Range': contentRange
         };
         
+        // Log basic info
         log(`Headers: ${JSON.stringify(headers)}`);
 
         try {
             const response = await fetch(uploadUrl, {
-                method: 'POST',
+                method: 'PUT',
                 headers: headers,
                 body: chunkBlob
             });
 
             log(`Chunk Response Status: ${response.status} ${response.statusText}`);
 
-            if (!response.ok) {
+            // Google returns 308 Resume Incomplete for intermediate chunks
+            // Google returns 200 OK (or 201) for the final chunk
+            const isResumeIncomplete = response.status === 308;
+            const isComplete = response.status === 200 || response.status === 201;
+
+            if (!isResumeIncomplete && !isComplete) {
                 const errorText = await response.text();
                 throw new Error(`Chunk Upload Failed [${response.status}]: ${errorText}`);
             }
