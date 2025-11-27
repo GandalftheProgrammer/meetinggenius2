@@ -49,7 +49,13 @@ export const processMeetingAudio = async (
 
     while (offset < totalBytes) {
         const chunkEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
-        const chunkBlob = audioBlob.slice(offset, chunkEnd);
+        
+        // SLICE WITH EMPTY TYPE:
+        // We pass '' as the content type to the slice.
+        // This prevents the browser from automatically adding a 'Content-Type: audio/webm' header.
+        // Since the server already knows the type from the handshake, this reduces CORS complexity.
+        const chunkBlob = audioBlob.slice(offset, chunkEnd, '');
+        
         const isLastChunk = chunkEnd === totalBytes;
         
         // Calculate standard Range header: bytes start-end/total
@@ -61,8 +67,8 @@ export const processMeetingAudio = async (
         log(`Uploading chunk: ${offset} - ${rangeEnd} / ${totalBytes} (${progress}%)`);
 
         // Prepare headers explicitly
+        // CRITICAL FIX: DO NOT SET Content-Length manually. The browser sets it.
         const headers: Record<string, string> = {
-            'Content-Length': chunkBlob.size.toString(),
             'Content-Range': contentRange
         };
         
@@ -109,16 +115,14 @@ export const processMeetingAudio = async (
                     }
                 } catch (jsonErr) {
                     console.error("JSON Parse Error on Final Chunk:", jsonErr);
-                    // Sometimes the server returns 200 OK without JSON on finalization if headers were mixed?
-                    // But for 'upload, finalize', it SHOULD return JSON.
+                    // sometimes server returns text?
                     throw new Error("Failed to parse final response from Google.");
                 }
             }
         } catch (fetchErr: any) {
             log(`Network/Fetch Error on chunk starting at ${offset}: ${fetchErr.message}`);
-            // Check if it's a "Failed to fetch" which is often CORS or Connection Closed
             if (fetchErr.message === 'Failed to fetch') {
-                log("Suggestion: This often indicates a CORS Preflight failure or the server closed the connection unexpectedly.");
+                log("Suggestion: This often indicates a CORS Preflight failure or forbidden header (like Content-Length).");
             }
             throw fetchErr;
         }
