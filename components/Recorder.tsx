@@ -71,7 +71,8 @@ const Recorder: React.FC<RecorderProps> = ({
         if (document.visibilityState === 'visible') {
             // Re-acquire Wake Lock if recording
             if (isRecording) {
-                await requestWakeLock();
+                // Don't await this to avoid blocking any UI thread operations
+                requestWakeLock();
             }
             // Resume Audio Context if suspended
             if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
@@ -155,9 +156,12 @@ const Recorder: React.FC<RecorderProps> = ({
   const startRecording = async () => {
     try {
       // 1. Request Wake Lock (Keep screen on)
-      await requestWakeLock();
+      // CRITICAL: Do NOT await this. Awaiting can block the UI or cause "user gesture" 
+      // expiration for subsequent audio APIs on some mobile browsers (iOS).
+      requestWakeLock().catch(e => console.log("Wake Lock start failed", e));
 
       // 2. Attempt Silent Loop Hack (Fail-safe)
+      // Execute immediately to latch onto the user gesture
       if (silentAudioRef.current) {
           silentAudioRef.current.play().catch(err => {
               console.warn("Silent audio hack failed (ignoring, proceeding with recording):", err);
