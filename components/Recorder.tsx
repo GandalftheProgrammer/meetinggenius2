@@ -1,9 +1,8 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload, ShieldCheck } from 'lucide-react';
+import { Mic, Square, MonitorPlay, Trash2, Circle, ListChecks, FileText, Upload } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
-import { saveChunk, startNewSession, markSessionComplete } from '../services/storageService';
 
 interface RecorderProps {
   appState: AppState;
@@ -26,7 +25,6 @@ const Recorder: React.FC<RecorderProps> = ({
   onSaveAudio,
   onFileUpload,
   audioUrl, 
-  debugLogs,
   meetingTitle,
   onRecordingFinished
 }) => {
@@ -35,11 +33,9 @@ const Recorder: React.FC<RecorderProps> = ({
   const [audioSource, setAudioSource] = useState<'microphone' | 'system'>('microphone');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isMobile, setIsMobile] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -47,23 +43,24 @@ const Recorder: React.FC<RecorderProps> = ({
     if (!navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent)) {
         setIsMobile(true);
     }
-    return () => cleanup();
+    return () => {
+        if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
-  const cleanup = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (stream) stream.getTracks().forEach(t => t.stop());
+  const stopTracks = (s: MediaStream | null) => {
+    if (s) s.getTracks().forEach(t => t.stop());
   };
 
   const startRecording = async () => {
     try {
-      cleanup();
-      chunksRef.current = [];
-      
+      audioChunksRef.current = [];
       let finalStream: MediaStream;
+
       if (audioSource === 'system') {
         const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
         const dest = audioCtx.createMediaStreamDestination();
         audioCtx.createMediaStreamSource(displayStream).connect(dest);
@@ -75,44 +72,41 @@ const Recorder: React.FC<RecorderProps> = ({
       
       setStream(finalStream);
       
-      // Kies het beste formaat dat de browser ondersteunt
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-        ? 'audio/webm;codecs=opus' 
+      // Kies het formaat dat de browser ondersteunt
+      const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? { mimeType: 'audio/webm;codecs=opus' } 
         : MediaRecorder.isTypeSupported('audio/mp4') 
-          ? 'audio/mp4' 
-          : '';
+          ? { mimeType: 'audio/mp4' } 
+          : undefined;
 
-      const recorder = new MediaRecorder(finalStream, mimeType ? { mimeType } : {});
+      const recorder = new MediaRecorder(finalStream, options);
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunksRef.current.push(e.data);
-          // Optioneel: schrijf ook naar IndexedDB voor extra veiligheid
-          saveChunk(e.data).catch(() => {});
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
         }
       };
 
-      recorder.onstop = async () => {
-        const finalBlob = new Blob(chunksRef.current, { type: chunksRef.current[0]?.type || 'audio/webm' });
-        onRecordingFinished(finalBlob);
-        await markSessionComplete();
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: audioChunksRef.current[0]?.type || 'audio/webm' });
+        onRecordingFinished(blob);
+        stopTracks(finalStream);
       };
 
-      await startNewSession(meetingTitle);
-      recorder.start(1000); // Verzamel elke seconde data
+      recorder.start(1000);
       setIsRecording(true);
       onRecordingChange(true);
       
       setRecordingTime(0);
-      const start = Date.now();
+      const startTime = Date.now();
       timerRef.current = window.setInterval(() => {
-        setRecordingTime(Math.floor((Date.now() - start) / 1000));
+        setRecordingTime(Math.floor((Date.now() - startTime) / 1000));
       }, 1000);
 
     } catch (error) {
-      console.error("Fout bij starten opname:", error);
-      alert("Kon de opname niet starten. Controleer je microfoon-rechten.");
+      console.error("Microfoon fout:", error);
+      alert("Kon de microfoon niet activeren. Controleer of je toestemming hebt gegeven.");
     }
   };
 
@@ -122,24 +116,11 @@ const Recorder: React.FC<RecorderProps> = ({
       setIsRecording(false);
       onRecordingChange(false);
       if (timerRef.current) clearInterval(timerRef.current);
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        setStream(null);
-      }
+      setStream(null);
     }
   };
 
   const toggleRecording = () => isRecording ? stopRecording() : startRecording();
-
-  const handleManualSave = async () => {
-      if (!onSaveAudio) return;
-      setIsSaving(true);
-      try {
-          await onSaveAudio();
-          setIsSaved(true);
-          setTimeout(() => setIsSaved(false), 3000);
-      } finally { setIsSaving(false); }
-  };
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -148,13 +129,19 @@ const Recorder: React.FC<RecorderProps> = ({
   };
 
   return (
-    <div className="w-full max-w-lg mx-auto bg-white rounded-3xl shadow-2xl border border-slate-100 p-8 flex flex-col items-center">
+    <div className="w-full max-w-lg mx-auto bg-white rounded-3xl shadow-xl border border-slate-100 p-8 flex flex-col items-center">
       
       {!isRecording && !audioUrl && (
         <div className="w-full mb-8">
           <div className="flex bg-slate-100 p-1.5 rounded-2xl">
-            <button onClick={() => setAudioSource('microphone')} className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all ${audioSource === 'microphone' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}><Mic className="w-4 h-4 inline mr-2"/>Microfoon</button>
-            {!isMobile && <button onClick={() => setAudioSource('system')} className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all ${audioSource === 'system' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}><MonitorPlay className="w-4 h-4 inline mr-2"/>Systeem</button>}
+            <button onClick={() => setAudioSource('microphone')} className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all ${audioSource === 'microphone' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>
+              <Mic className="w-4 h-4 inline mr-2"/>Microfoon
+            </button>
+            {!isMobile && (
+              <button onClick={() => setAudioSource('system')} className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all ${audioSource === 'system' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>
+                <MonitorPlay className="w-4 h-4 inline mr-2"/>Systeem
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -162,24 +149,27 @@ const Recorder: React.FC<RecorderProps> = ({
       <div className="w-full h-32 mb-8 bg-slate-50 rounded-2xl flex items-center justify-center border-2 border-slate-100 overflow-hidden relative">
         <AudioVisualizer stream={stream} isRecording={isRecording} />
         {isRecording && (
-            <div className="absolute top-3 right-3 flex items-center gap-1.5 px-3 py-1.5 bg-green-500 text-white text-[10px] font-black rounded-full shadow-lg animate-pulse">
-                <ShieldCheck className="w-3.5 h-3.5" /> OPNAME ACTIEF
+            <div className="absolute top-3 right-3 flex items-center gap-1.5 px-3 py-1.5 bg-red-500 text-white text-[10px] font-black rounded-full shadow-lg animate-pulse">
+                <Circle className="w-3 h-3 fill-current" /> REC
             </div>
         )}
       </div>
 
-      <div className={`text-6xl font-mono font-bold mb-8 tracking-tighter ${isRecording ? 'text-red-500' : 'text-slate-800'}`}>
+      <div className={`text-6xl font-mono font-bold mb-8 tracking-tighter transition-colors ${isRecording ? 'text-red-500' : 'text-slate-800'}`}>
         {formatTime(recordingTime)}
       </div>
 
       <div className="flex flex-col items-center justify-center w-full mb-8 gap-6">
-        <button onClick={toggleRecording} className={`w-24 h-24 rounded-full shadow-xl flex items-center justify-center transition-all active:scale-95 ${isRecording ? 'bg-slate-900 hover:bg-black ring-8 ring-slate-100' : 'bg-red-500 hover:bg-red-600 ring-8 ring-red-50'}`}>
+        <button 
+          onClick={toggleRecording} 
+          className={`w-24 h-24 rounded-full shadow-xl flex items-center justify-center transition-all active:scale-95 ${isRecording ? 'bg-slate-900 hover:bg-black ring-8 ring-slate-50' : 'bg-red-500 hover:bg-red-600 ring-8 ring-red-50'}`}
+        >
           {isRecording ? <Square className="w-10 h-10 text-white fill-current" /> : <Circle className="w-10 h-10 text-white fill-current" />}
         </button>
         
         {!isRecording && !audioUrl && (
             <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 text-sm font-bold transition-colors">
-                <Upload className="w-4 h-4" /> BESTAND IMPORTEREN
+                <Upload className="w-4 h-4" /> OF IMPORT EEN BESTAND
                 <input type="file" accept="audio/*" ref={fileInputRef} onChange={(e) => e.target.files?.[0] && onFileUpload(e.target.files[0])} className="hidden" />
             </button>
         )}
@@ -189,10 +179,16 @@ const Recorder: React.FC<RecorderProps> = ({
         <div className="w-full border-t border-slate-100 pt-8 animate-in slide-in-from-bottom-4">
           <audio controls src={audioUrl} className="w-full h-12 mb-8 shadow-sm rounded-xl" />
           <div className="grid grid-cols-2 gap-4 mb-4">
-            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="p-4 bg-blue-600 hover:bg-blue-700 rounded-2xl text-white font-bold text-sm flex flex-col items-center gap-2 shadow-lg transition-all active:scale-95"><ListChecks className="w-5 h-5"/>Samenvatten</button>
-            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="p-4 bg-purple-600 hover:bg-purple-700 rounded-2xl text-white font-bold text-sm flex flex-col items-center gap-2 shadow-lg transition-all active:scale-95"><FileText className="w-5 h-5"/>Transcript</button>
+            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="p-4 bg-blue-600 hover:bg-blue-700 rounded-2xl text-white font-bold text-sm flex flex-col items-center gap-2 shadow-lg transition-all active:scale-95">
+              <ListChecks className="w-5 h-5"/>Samenvatten
+            </button>
+            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="p-4 bg-purple-600 hover:bg-purple-700 rounded-2xl text-white font-bold text-sm flex flex-col items-center gap-2 shadow-lg transition-all active:scale-95">
+              <FileText className="w-5 h-5"/>Transcript
+            </button>
           </div>
-          <button onClick={onDiscard} className="w-full mt-4 py-3 text-sm text-red-500 font-bold flex items-center justify-center gap-2 hover:bg-red-50 rounded-xl transition-colors"><Trash2 className="w-4 h-4" /> Verwijderen</button>
+          <button onClick={onDiscard} className="w-full mt-4 py-3 text-sm text-red-500 font-bold flex items-center justify-center gap-2 hover:bg-red-50 rounded-xl transition-colors">
+            <Trash2 className="w-4 h-4" /> Opname Verwijderen
+          </button>
         </div>
       )}
     </div>

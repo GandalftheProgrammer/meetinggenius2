@@ -6,8 +6,8 @@ import Results from './components/Results';
 import { AppState, MeetingData, ProcessingMode, GeminiModel } from './types';
 import { processMeetingAudio } from './services/geminiService';
 import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disconnectDrive } from './services/driveService';
-import { getActiveSession, recoverAudio, clearSession } from './services/storageService';
-import { AlertCircle, RotateCcw, Trash2, Loader2, Calendar } from 'lucide-react';
+import { clearSession } from './services/storageService';
+import { AlertCircle, Loader2, Calendar } from 'lucide-react';
 
 const App: React.FC = () => {
   const generateDefaultTitle = () => {
@@ -25,7 +25,6 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [combinedBlob, setCombinedBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [recoveryData, setRecoveryData] = useState<{blob: Blob, title: string} | null>(null);
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
@@ -34,36 +33,10 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const checkRecovery = async () => {
-        const active = await getActiveSession();
-        if (active) {
-            const recovered = await recoverAudio();
-            if (recovered) {
-                setRecoveryData({ blob: recovered.blob, title: recovered.metadata.title });
-            }
-        }
-    };
-    checkRecovery();
-  }, []);
-
-  useEffect(() => {
     initDrive((token) => {
         setIsDriveConnected(!!token);
     });
   }, []);
-
-  const handleApplyRecovery = () => {
-      if (!recoveryData) return;
-      handleRecordingFinished(recoveryData.blob);
-      setTitle(recoveryData.title);
-      setAppState(AppState.PAUSED);
-      setRecoveryData(null);
-  };
-
-  const handleDiscardRecovery = async () => {
-      await clearSession();
-      setRecoveryData(null);
-  };
 
   const handleConnectDrive = () => {
       const storedName = localStorage.getItem('drive_folder_name');
@@ -79,14 +52,18 @@ const App: React.FC = () => {
   };
 
   const handleRecordingFinished = (blob: Blob) => {
+      if (!blob || blob.size < 100) {
+          setError("De opname is mislukt of bevat geen data. Probeer het opnieuw.");
+          return;
+      }
       setCombinedBlob(blob);
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       setAudioUrl(URL.createObjectURL(blob));
+      setAppState(AppState.PAUSED);
   };
 
   const handleFileUpload = (file: File) => {
       handleRecordingFinished(file);
-      setAppState(AppState.PAUSED);
       setTitle(file.name.replace(/\.[^/.]+$/, ""));
   };
 
@@ -102,29 +79,23 @@ const App: React.FC = () => {
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
     setError(null);
-    let blob = combinedBlob;
-    if (!blob) {
-        const recovered = await recoverAudio();
-        if (recovered) {
-            blob = recovered.blob;
-            handleRecordingFinished(blob);
-        }
+    if (!combinedBlob) {
+        setError("Geen audio gevonden om te verwerken.");
+        return;
     }
     
-    if (!blob) return;
     const currentTitle = title.trim() || generateDefaultTitle();
     setTitle(currentTitle);
     
     setAppState(AppState.PROCESSING);
     try {
-      const newData = await processMeetingAudio(blob, blob.type, mode, selectedModel, addLog);
+      const newData = await processMeetingAudio(combinedBlob, combinedBlob.type, mode, selectedModel, addLog);
       setMeetingData(newData);
       setAppState(AppState.COMPLETED);
       
       if (isDriveConnected && newData.summary) {
           await uploadTextToDrive(`${currentTitle}_samenvatting`, newData.summary, 'Notes');
       }
-      await clearSession();
     } catch (apiError: any) {
       setError(apiError.message || "Er is iets misgegaan tijdens de verwerking.");
       setAppState(AppState.PAUSED); 
@@ -148,26 +119,11 @@ const App: React.FC = () => {
 
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 py-8">
         
-        {recoveryData && appState === AppState.IDLE && (
-            <div className="max-w-lg mx-auto mb-8 bg-blue-600 text-white p-4 rounded-2xl shadow-lg flex items-center justify-between animate-in slide-in-from-top-4">
-                <div className="flex items-center gap-3">
-                    <AlertCircle className="w-6 h-6 shrink-0"/>
-                    <div>
-                        <p className="font-bold text-sm">Herstel eerdere opname?</p>
-                        <p className="text-xs opacity-90">"{recoveryData.title}"</p>
-                    </div>
-                </div>
-                <div className="flex gap-2">
-                    <button onClick={handleDiscardRecovery} className="p-2 hover:bg-red-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4"/></button>
-                    <button onClick={handleApplyRecovery} className="bg-white text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 hover:bg-slate-100 transition-colors"><RotateCcw className="w-3.5 h-3.5"/> Herstel</button>
-                </div>
-            </div>
-        )}
-
         {error && (
-            <div className="max-w-lg mx-auto mb-6 bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3">
+            <div className="max-w-lg mx-auto mb-6 bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3 animate-in fade-in zoom-in duration-300">
                 <AlertCircle className="w-5 h-5 shrink-0" />
                 <p className="text-sm font-medium">{error}</p>
+                <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600 font-bold">×</button>
             </div>
         )}
 
@@ -180,9 +136,6 @@ const App: React.FC = () => {
                 <div className="text-center space-y-2">
                     <h2 className="text-xl font-bold text-slate-800">AI analyseert de meeting...</h2>
                     <p className="text-slate-500 max-w-xs mx-auto text-sm">Dit duurt ongeveer 30-60 seconden.</p>
-                </div>
-                <div className="w-full max-w-xs bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                    <div className="bg-blue-600 h-full w-2/3 animate-progress"></div>
                 </div>
             </div>
         ) : appState !== AppState.COMPLETED ? (
@@ -216,7 +169,7 @@ const App: React.FC = () => {
           <Results data={meetingData} title={title} onReset={handleDiscard} onGenerateMissing={handleProcessAudio} isProcessingMissing={false} onSaveAudio={handleManualAudioSave} />
         )}
       </main>
-      <footer className="py-6 text-center text-slate-400 text-xs font-medium">MeetingGenius Safe-Guard System &bull; {new Date().getFullYear()}</footer>
+      <footer className="py-6 text-center text-slate-400 text-xs font-medium">MeetingGenius AI Assistant &bull; {new Date().getFullYear()}</footer>
     </div>
   );
 };
