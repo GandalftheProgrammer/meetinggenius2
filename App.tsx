@@ -109,36 +109,36 @@ const App: React.FC = () => {
   const getFormattedDateTime = (dateInput?: Date) => {
       const now = dateInput || new Date();
       const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-      const timePart = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-      return `${datePart} at ${timePart}`;
+      const hours = now.getHours().toString().padStart(2, '0');
+      const minutes = now.getMinutes().toString().padStart(2, '0');
+      // Formaat: "12 February 2026 at 18h02m"
+      return `${datePart} at ${hours}h${minutes}m`;
   };
 
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
+    
+    // Verwijder verboden karakters voor Google Drive bestandsnamen
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
     
-    // Create an array of sync promises to run in parallel
-    const syncTasks: Promise<void>[] = [];
+    addLog("Starting Drive sync...");
 
     // 1. Audio
     if (blob) {
-      syncTasks.push((async () => {
-        try {
-          addLog("Syncing audio...");
-          await uploadAudioToDrive(safeTitle, blob);
-          addLog("Audio saved to Drive ✅");
-        } catch (e) {
-          addLog("Audio sync failed.");
-          console.error(e);
-        }
-      })());
+      try {
+        addLog("Syncing audio...");
+        await uploadAudioToDrive(safeTitle, blob);
+        addLog("Audio saved ✅");
+      } catch (e) {
+        addLog("Audio sync failed.");
+        console.error(e);
+      }
     }
 
     // 2. Notes
     if (data.summary && data.summary.length > 0) {
-      syncTasks.push((async () => {
-        try {
-          const notesMarkdown = `
+      try {
+        const notesMarkdown = `
 # Meeting Notes: ${currentTitle}
 ## Summary
 ${data.summary}
@@ -146,54 +146,59 @@ ${data.summary}
 ${data.conclusions.map(d => `- ${d}`).join('\n')}
 ## Action Items
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
-          `.trim();
-          addLog("Syncing notes...");
-          await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
-          addLog("Notes saved to Drive ✅");
-        } catch (e) {
-          addLog("Notes sync failed.");
-          console.error(e);
-        }
-      })());
+        `.trim();
+        addLog("Syncing notes...");
+        await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
+        addLog("Notes saved ✅");
+      } catch (e) {
+        addLog("Notes sync failed.");
+        console.error(e);
+      }
     }
 
     // 3. Transcript
     if (data.transcription && data.transcription.length > 0) {
-      syncTasks.push((async () => {
-        try {
-          addLog("Syncing transcript...");
-          await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
-          addLog("Transcript saved to Drive ✅");
-        } catch (e) {
-          addLog("Transcript sync failed.");
-          console.error(e);
-        }
-      })());
+      try {
+        addLog("Syncing transcript...");
+        await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
+        addLog("Transcript saved ✅");
+      } catch (e) {
+        addLog("Transcript sync failed.");
+        console.error(e);
+      }
     }
-
-    // Run all tasks in parallel
-    await Promise.allSettled(syncTasks);
+    
+    addLog("Sync finished.");
   };
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
     if (!combinedBlob) return;
-    let baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
-    const timestamp = getFormattedDateTime(baseDate);
+    
+    const baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
+    const timestampStr = getFormattedDateTime(baseDate);
+    
     let finalTitle = title.trim();
     if (!finalTitle) {
-      finalTitle = `Meeting - ${timestamp}`;
-    } else if (!finalTitle.includes(timestamp)) {
-      finalTitle = `${finalTitle} - ${timestamp}`;
+      finalTitle = `Meeting on ${timestampStr}`;
+    } else {
+      // Zorg voor het formaat: "[Titel] on [Datum] at [Tijd]"
+      if (!finalTitle.includes(' on ')) {
+        finalTitle = `${finalTitle} on ${timestampStr}`;
+      }
     }
+    
     setTitle(finalTitle);
+
     if (appState === AppState.COMPLETED) {
       setIsGeneratingMissing(true);
     } else {
       setAppState(AppState.PROCESSING);
     }
+
     try {
       addLog(`AI Model: ${selectedModel}`);
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', mode, selectedModel, addLog);
+      
       const updatedData = meetingData ? {
           ...meetingData,
           transcription: newData.transcription || meetingData.transcription,
@@ -201,9 +206,12 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           conclusions: newData.conclusions.length > 0 ? newData.conclusions : meetingData.conclusions,
           actionItems: newData.actionItems.length > 0 ? newData.actionItems : meetingData.actionItems
       } : newData;
+
       setMeetingData(updatedData);
       setAppState(AppState.COMPLETED);
+
       if (isDriveConnected) {
+        // We wachten niet op de sync voor de UI update, maar voeren hem wel uit
         autoSyncToDrive(updatedData, finalTitle, combinedBlob);
       }
     } catch (apiError) {

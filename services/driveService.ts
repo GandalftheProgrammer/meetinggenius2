@@ -47,6 +47,7 @@ export const disconnectDrive = () => {
   const t = accessToken;
   accessToken = null;
   mainFolderId = null;
+  folderLock = null;
   localStorage.removeItem('drive_token');
   localStorage.removeItem('drive_token_expiry');
   localStorage.removeItem('drive_sticky_connection');
@@ -76,11 +77,10 @@ const createFolder = async (name: string, parentId?: string): Promise<string> =>
   return d.id;
 };
 
-// Robust folder ensures with a lock to prevent duplicate creation
+// Zorgt voor een veilige, eenmalige aanmaak van de hoofdmap en submappen
 const ensureFolder = async (sub: string): Promise<string> => {
     const main = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
     
-    // Lock logic to prevent multiple rapid requests from creating duplicate main folders
     if (!mainFolderId) {
         if (!folderLock) {
             folderLock = (async () => {
@@ -92,9 +92,11 @@ const ensureFolder = async (sub: string): Promise<string> => {
         await folderLock;
     }
 
-    if (!mainFolderId) throw new Error("Could not ensure folder");
+    if (!mainFolderId) throw new Error("Could not access main folder");
     
-    return await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
+    // Check subfolder
+    const subId = await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
+    return subId;
 };
 
 const convertMarkdownToHtml = (md: string): string => {
@@ -119,13 +121,13 @@ const convertMarkdownToHtml = (md: string): string => {
     return `
       <!DOCTYPE html><html><head><meta charset="utf-8">
       <style>
-        body { font-family: Arial, sans-serif; line-height: 1.2; color: #333; margin: 0; padding: 0; }
-        h1 { color: #1e293b; font-size: 22pt; margin: 0 0 8pt 0; padding: 0; font-weight: bold; }
-        h2 { color: #334155; font-size: 16pt; margin: 10pt 0 4pt 0; font-weight: bold; }
-        h3 { color: #475569; font-size: 13pt; margin: 8pt 0 2pt 0; font-weight: bold; }
-        p { margin: 0 0 6pt 0; }
-        ul { margin: 0 0 8pt 0; padding-left: 20pt; }
-        li { margin-bottom: 2pt; }
+        body { font-family: Arial, sans-serif; line-height: 1.2; color: #333; margin: 0; padding: 40px; }
+        h1 { color: #1e293b; font-size: 22pt; margin: 0 0 12pt 0; padding: 0; font-weight: bold; }
+        h2 { color: #334155; font-size: 16pt; margin: 14pt 0 6pt 0; font-weight: bold; border-bottom: 1px solid #eee; }
+        h3 { color: #475569; font-size: 13pt; margin: 10pt 0 4pt 0; font-weight: bold; }
+        p { margin: 0 0 8pt 0; }
+        ul { margin: 0 0 10pt 0; padding-left: 20pt; }
+        li { margin-bottom: 3pt; }
       </style>
       </head><body>${html}</body></html>`;
 };
