@@ -10,7 +10,6 @@ import { initDrive, connectToDrive, uploadAudioToDrive, uploadTextToDrive, disco
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
-  // CHANGED: Default model is now gemini-2.5-flash-lite
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash-lite');
   const [lastRequestedMode, setLastRequestedMode] = useState<ProcessingMode>('NOTES_ONLY');
   
@@ -29,7 +28,6 @@ const App: React.FC = () => {
     setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString('en-GB')} - ${msg}`]);
   };
 
-  // Helper to format date like "12 February 2026 at 18h02m"
   const formatMeetingDateTime = (date: Date) => {
     const day = date.getDate();
     const months = [
@@ -121,35 +119,46 @@ const App: React.FC = () => {
     
     const startTime = sessionStartTime || new Date();
     const dateString = formatMeetingDateTime(startTime);
-    const baseName = `${currentTitle} on ${dateString}`;
-    const safeBaseName = baseName.replace(/[/\\?%*:|"<>]/g, '-');
+    const safeBaseName = `${currentTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
 
     addLog(`Cloud Storage: Synching to folder...`);
 
-    // 1. Audio
+    // 1. Audio Sync
     if (blob) {
       const audioName = `${safeBaseName} - audio`;
-      addLog(`Syncing Audio: ${audioName}`);
       uploadAudioToDrive(audioName, blob)
         .then(() => addLog("Drive: Audio sync OK."))
         .catch(() => addLog("Drive: Audio sync FAILED."));
     }
 
-    // 2. Notes
-    if (data.summary) {
+    // 2. Structured Notes Sync
+    if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      const notesMarkdown = `# Notes: ${currentTitle}\n\n${data.summary}\n\n## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
-      addLog(`Syncing Notes: ${notesName}`);
+      // Constructing markdown specifically for the Doc layout
+      let notesMarkdown = `# Meeting Notes: ${currentTitle} - ${dateString}\n\n`;
+      
+      if (data.summary) {
+          notesMarkdown += `## Summary\n${data.summary}\n\n`;
+      }
+      
+      if (data.conclusions && data.conclusions.length > 0) {
+          notesMarkdown += `## Conclusions & Insights\n${data.conclusions.map(i => `- ${i}`).join('\n')}\n\n`;
+      }
+      
+      if (data.actionItems && data.actionItems.length > 0) {
+          notesMarkdown += `## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
+      }
+
       uploadTextToDrive(notesName, notesMarkdown, 'Notes')
         .then(() => addLog("Drive: Notes sync OK."))
         .catch(() => addLog("Drive: Notes sync FAILED."));
     }
 
-    // 3. Transcript
+    // 3. Transcript Sync
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      addLog(`Syncing Transcript: ${transcriptName}`);
-      uploadTextToDrive(transcriptName, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts')
+      const transcriptMarkdown = `# Transcription: ${currentTitle} - ${dateString}\n\n${data.transcription}`;
+      uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts')
         .then(() => addLog("Drive: Transcript sync OK."))
         .catch(() => addLog("Drive: Transcript sync FAILED."));
     }
