@@ -11,6 +11,7 @@ const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash');
+  const [lastRequestedMode, setLastRequestedMode] = useState<ProcessingMode>('NOTES_ONLY');
   
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +149,7 @@ const App: React.FC = () => {
   const handleProcessAudio = async (mode: ProcessingMode) => {
     if (!combinedBlob) return;
     
+    setLastRequestedMode(mode);
     const baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
     const timestampStr = getFormattedDateTime(baseDate);
     
@@ -167,8 +169,8 @@ const App: React.FC = () => {
     }
 
     try {
-      addLog(`AI Verwerking gestart (transcript + notes)...`);
-      // Forceer mode 'ALL' zodat alles wordt gegenereerd
+      addLog(`AI Verwerking gestart...`);
+      // We vragen ALTIJD 'ALL' aan bij de service om alles beschikbaar te hebben voor Drive
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', 'ALL', selectedModel, addLog);
       
       const updatedData = meetingData ? {
@@ -183,7 +185,6 @@ const App: React.FC = () => {
       setAppState(AppState.COMPLETED);
 
       if (isDriveConnected) {
-        // Synchroniseer beide onderdelen naar Drive
         autoSyncToDrive(updatedData, finalTitle, combinedBlob);
       }
     } catch (apiError) {
@@ -258,6 +259,7 @@ const App: React.FC = () => {
             isDriveConnected={isDriveConnected}
             onConnectDrive={handleConnectDrive}
             audioBlob={combinedBlob}
+            initialMode={lastRequestedMode}
           />
         )}
       </main>

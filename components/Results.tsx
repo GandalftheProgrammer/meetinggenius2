@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, Download } from 'lucide-react';
 import { MeetingData, ProcessingMode } from '../types';
@@ -13,6 +13,7 @@ interface ResultsProps {
   isDriveConnected: boolean;
   onConnectDrive: () => void;
   audioBlob: Blob | null;
+  initialMode?: ProcessingMode;
 }
 
 const Results: React.FC<ResultsProps> = ({ 
@@ -21,9 +22,12 @@ const Results: React.FC<ResultsProps> = ({
   onReset, 
   onGenerateMissing,
   isProcessingMissing,
-  audioBlob
+  audioBlob,
+  initialMode = 'NOTES_ONLY'
 }) => {
-  const [activeTab, setActiveTab] = useState<'notes' | 'transcription'>('notes');
+  const [activeTab, setActiveTab] = useState<'notes' | 'transcription'>(
+    initialMode === 'TRANSCRIPT_ONLY' ? 'transcription' : 'notes'
+  );
 
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
@@ -45,7 +49,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   };
 
   const notesMarkdown = getNotesMarkdown();
-  const transcriptionMarkdown = `# Transcription: ${title}\n\n${data.transcription}`;
+  const transcriptionMarkdown = `# Transcript: ${title}\n\n${data.transcription}`;
 
   const downloadBlob = (blob: Blob, suffix: string) => {
     const url = URL.createObjectURL(blob);
@@ -132,8 +136,8 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
         </div>
       </div>
       <div className="md:hidden flex p-1 bg-slate-200/50 rounded-xl mb-6">
-        <button onClick={() => setActiveTab('notes')} className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === 'notes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-50'}`}>Notes</button>
-        <button onClick={() => setActiveTab('transcription')} className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === 'transcription' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-50'}`}>Transcript</button>
+        <button onClick={() => setActiveTab('notes')} className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === 'notes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400'}`}>Notes</button>
+        <button onClick={() => setActiveTab('transcription')} className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === 'transcription' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400'}`}>Transcript</button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 h-[calc(100vh-220px)] min-h-[500px]">
         <div className={`flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden ${activeTab === 'notes' ? 'block' : 'hidden md:flex'}`}>

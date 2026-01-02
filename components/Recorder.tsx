@@ -229,12 +229,6 @@ const Recorder: React.FC<RecorderProps> = ({
         </div>
       )}
 
-      {isMobile && !isRecording && (
-         <div className="mb-6 text-center">
-           <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">Mobile Optimized (Background-safe)</span>
-         </div>
-      )}
-
       <div className="w-full h-24 mb-6 bg-slate-50 rounded-xl flex items-center justify-center border border-slate-100 overflow-hidden relative">
         {isRecording || hasRecordedData ? <AudioVisualizer stream={stream} isRecording={isRecording} /> : <div className="text-slate-400 text-sm font-medium">Ready to record</div>}
       </div>
@@ -276,13 +270,12 @@ const Recorder: React.FC<RecorderProps> = ({
               <audio controls src={audioUrl} className="w-full h-8" />
             </div>
           )}
-          <p className="text-xs text-slate-500 mb-4 italic">Press either button to generate BOTH notes and transcript.</p>
           <div className="grid grid-cols-2 gap-3 w-full mb-3">
-            <button onClick={() => onProcessAudio('ALL')} className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700">
+            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700">
               <ListChecks className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
               <span className="font-semibold text-sm">Summary</span>
             </button>
-            <button onClick={() => onProcessAudio('ALL')} className="flex flex-col items-center justify-center p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-all group text-purple-700">
+            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="flex flex-col items-center justify-center p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-all group text-purple-700">
               <FileText className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
               <span className="font-semibold text-sm">Transcription</span>
             </button>
