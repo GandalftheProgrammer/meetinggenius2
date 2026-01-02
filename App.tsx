@@ -123,7 +123,7 @@ const App: React.FC = () => {
 
     addLog(`Cloud Storage: Synching to folder...`);
 
-    // 1. Audio Sync
+    // 1. Audio
     if (blob) {
       const audioName = `${safeBaseName} - audio`;
       uploadAudioToDrive(audioName, blob)
@@ -131,10 +131,9 @@ const App: React.FC = () => {
         .catch(() => addLog("Drive: Audio sync FAILED."));
     }
 
-    // 2. Structured Notes Sync
+    // 2. Notes
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      // Constructing markdown specifically for the Doc layout
       let notesMarkdown = `# Meeting Notes: ${currentTitle} - ${dateString}\n\n`;
       
       if (data.summary) {
@@ -154,7 +153,7 @@ const App: React.FC = () => {
         .catch(() => addLog("Drive: Notes sync FAILED."));
     }
 
-    // 3. Transcript Sync
+    // 3. Transcript
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
       const transcriptMarkdown = `# Transcription: ${currentTitle} - ${dateString}\n\n${data.transcription}`;
