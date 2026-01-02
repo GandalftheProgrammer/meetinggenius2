@@ -39,7 +39,7 @@ const App: React.FC = () => {
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     
-    return `${day} ${month} ${year} at ${hours}h${minutes}m`;
+    return `${day} ${month} ${year} at ${hours}:${minutes}`;
   };
 
   useEffect(() => {
@@ -121,24 +121,19 @@ const App: React.FC = () => {
     const dateString = formatMeetingDateTime(startTime);
     const safeBaseName = `${currentTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
 
-    addLog(`Cloud Storage: Synching to folder...`);
+    addLog(`Cloud Storage: Syncing...`);
 
     // 1. Audio
     if (blob) {
       const audioName = `${safeBaseName} - audio`;
-      uploadAudioToDrive(audioName, blob)
-        .then(() => addLog("Drive: Audio sync OK."))
-        .catch(() => addLog("Drive: Audio sync FAILED."));
+      uploadAudioToDrive(audioName, blob).catch(() => {});
     }
 
     // 2. Notes
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      let notesMarkdown = `# Meeting Notes: ${currentTitle} - ${dateString}\n\n`;
-      
-      if (data.summary) {
-          notesMarkdown += `## Summary\n${data.summary}\n\n`;
-      }
+      let notesMarkdown = `# Notes: ${currentTitle}\n\n`;
+      notesMarkdown += `${data.summary}\n\n`;
       
       if (data.conclusions && data.conclusions.length > 0) {
           notesMarkdown += `## Conclusions & Insights\n${data.conclusions.map(i => `- ${i}`).join('\n')}\n\n`;
@@ -148,18 +143,14 @@ const App: React.FC = () => {
           notesMarkdown += `## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
       }
 
-      uploadTextToDrive(notesName, notesMarkdown, 'Notes')
-        .then(() => addLog("Drive: Notes sync OK."))
-        .catch(() => addLog("Drive: Notes sync FAILED."));
+      uploadTextToDrive(notesName, notesMarkdown, 'Notes').catch(() => {});
     }
 
     // 3. Transcript
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      const transcriptMarkdown = `# Transcription: ${currentTitle} - ${dateString}\n\n${data.transcription}`;
-      uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts')
-        .then(() => addLog("Drive: Transcript sync OK."))
-        .catch(() => addLog("Drive: Transcript sync FAILED."));
+      const transcriptMarkdown = `# Transcript: ${currentTitle}\n\n${data.transcription}`;
+      uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
     }
   };
 
@@ -173,7 +164,7 @@ const App: React.FC = () => {
     setAppState(AppState.PROCESSING);
 
     try {
-      addLog("Starting full analysis pipeline...");
+      addLog("Starting analysis...");
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', 'ALL', selectedModel, addLog);
       
       setMeetingData(newData);
@@ -183,8 +174,8 @@ const App: React.FC = () => {
         autoSyncToDrive(newData, finalTitle, combinedBlob);
       }
     } catch (apiError) {
-      addLog(`Fatal Pipeline Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
-      setError("Analysis failed. See debug log.");
+      addLog(`Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
+      setError("Analysis failed.");
       setAppState(AppState.PAUSED); 
     }
   };
@@ -225,7 +216,7 @@ const App: React.FC = () => {
                 id="title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="f.i. Strategy Brainstorm"
+                placeholder="Meeting Title"
                 className="w-full px-4 py-3 rounded-xl border border-slate-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                 disabled={appState === AppState.PROCESSING || appState === AppState.RECORDING}
               />
@@ -257,7 +248,7 @@ const App: React.FC = () => {
         )}
       </main>
       <footer className="py-6 text-center text-slate-400 text-xs font-medium tracking-wide uppercase">
-        MeetingGenius Cloud v2.1
+        MeetingGenius Cloud
       </footer>
     </div>
   );

@@ -100,47 +100,24 @@ const ensureFolder = async (sub: string): Promise<string> => {
 };
 
 const convertMarkdownToHtml = (md: string): string => {
-    // Basic Markdown parser optimized for clean Google Docs conversion
-    let html = md.trim()
+    // We converteren Markdown naar simpele HTML tags. 
+    // GEEN head, GEEN body, GEEN style. Alleen de tags.
+    // Google Docs pakt dit op als basisopmaak.
+    return md.trim()
         .replace(/^# (.*$)/gm, '<h1>$1</h1>')
         .replace(/^## (.*$)/gm, '<h2>$1</h2>')
         .replace(/^### (.*$)/gm, '<h3>$1</h3>')
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
-        .replace(/- (.*$)/gm, '<li>$1</li>');
-
-    // Wrap list items in <ul> tags
-    html = html.replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>');
-    
-    // Wrap paragraphs
-    const lines = html.split('\n');
-    html = lines.map(l => {
-        const t = l.trim();
-        if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li')) return l;
-        return `<p>${l}</p>`;
-    }).join('');
-
-    // Extremely minimal HTML structure so Google Docs uses its native default styles
-    return `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            line-height: 1.5;
-            color: #000000;
-        }
-        h1 { font-size: 20pt; margin-bottom: 12pt; }
-        h2 { font-size: 14pt; margin-top: 20pt; margin-bottom: 10pt; }
-        p, li { font-size: 11pt; margin-bottom: 8pt; }
-        ul { padding-left: 30px; }
-    </style>
-</head>
-<body>
-    ${html}
-</body>
-</html>`;
+        .replace(/- (.*$)/gm, '<li>$1</li>')
+        .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
+        .split('\n')
+        .map(l => {
+            const t = l.trim();
+            if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li')) return l;
+            return `<p>${l}</p>`;
+        })
+        .join('');
 };
 
 const uploadFile = async (name: string, content: string | Blob, type: string, sub: string, toDoc: boolean): Promise<any> => {
