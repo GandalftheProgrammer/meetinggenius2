@@ -117,49 +117,32 @@ const App: React.FC = () => {
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
     
-    // We behouden de spaties, maar verwijderen verboden karakters voor systemen
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
     addLog("Drive sync gestart...");
 
-    // Sequentiële upload om API-limieten en race conditions te voorkomen
-    
-    // 1. Audio
+    // 1. Audio (Groot bestand, we wachten hier niet op voor de rest)
     if (blob) {
-      try {
-        await uploadAudioToDrive(safeTitle, blob);
-        addLog("Audio opgeslagen ✅");
-      } catch (e) {
-        addLog("Audio sync mislukt ❌");
-        console.error(e);
-      }
+      uploadAudioToDrive(safeTitle, blob)
+        .then(() => addLog("Audio opgeslagen ✅"))
+        .catch(e => { addLog("Audio sync mislukt ❌"); console.error(e); });
     }
 
-    // 2. Notes
+    // 2. Notes (Klein bestand, direct versturen)
     if (data.summary && data.summary.length > 0) {
-      try {
-        const notesMarkdown = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}`;
-        // Geen underscore voor 'Notes'
-        await uploadTextToDrive(`${safeTitle} Notes`, notesMarkdown, 'Notes');
-        addLog("Notes opgeslagen ✅");
-      } catch (e) {
-        addLog("Notes sync mislukt ❌");
-        console.error(e);
-      }
+      const notesMarkdown = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}`;
+      addLog("Notes opslaan...");
+      uploadTextToDrive(`${safeTitle} Notes`, notesMarkdown, 'Notes')
+        .then(() => addLog("Notes opgeslagen ✅"))
+        .catch(e => { addLog("Notes sync mislukt ❌"); console.error(e); });
     }
 
-    // 3. Transcript
+    // 3. Transcript (Klein bestand, direct versturen)
     if (data.transcription && data.transcription.length > 0) {
-      try {
-        // Geen underscore voor 'Transcript'
-        await uploadTextToDrive(`${safeTitle} Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
-        addLog("Transcript opgeslagen ✅");
-      } catch (e) {
-        addLog("Transcript sync mislukt ❌");
-        console.error(e);
-      }
+      addLog("Transcript opslaan...");
+      uploadTextToDrive(`${safeTitle} Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts')
+        .then(() => addLog("Transcript opgeslagen ✅"))
+        .catch(e => { addLog("Transcript sync mislukt ❌"); console.error(e); });
     }
-    
-    addLog("Sync voltooid.");
   };
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
@@ -184,7 +167,7 @@ const App: React.FC = () => {
     }
 
     try {
-      addLog(`AI Verwerking gestart...`);
+      addLog(`AI Verwerking gestart met ${selectedModel}...`);
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', mode, selectedModel, addLog);
       
       const updatedData = meetingData ? {

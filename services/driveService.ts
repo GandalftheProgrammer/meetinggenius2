@@ -45,7 +45,6 @@ export const connectToDrive = () => {
 };
 
 export const disconnectDrive = () => {
-  const t = accessToken;
   accessToken = null;
   mainFolderId = null;
   folderLock = null;
@@ -53,7 +52,9 @@ export const disconnectDrive = () => {
   localStorage.removeItem('drive_token');
   localStorage.removeItem('drive_token_expiry');
   localStorage.removeItem('drive_sticky_connection');
-  if (t && typeof google !== 'undefined') google.accounts.oauth2.revoke(t, () => {});
+  if (typeof google !== 'undefined') {
+      // Optioneel: revoke token
+  }
 };
 
 const getFolderId = async (name: string, parentId?: string): Promise<string | null> => {
@@ -93,7 +94,7 @@ const ensureFolder = async (sub: string): Promise<string> => {
         await folderLock;
     }
 
-    if (!mainFolderId) throw new Error("Could not access main folder");
+    if (!mainFolderId) throw new Error("Main folder missing");
     if (subFolderCache[sub]) return subFolderCache[sub];
 
     const subId = await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
@@ -115,54 +116,40 @@ const convertMarkdownToHtml = (md: string): string => {
     const lines = html.split('\n');
     html = lines.map(l => {
         const t = l.trim();
-        if (!t) return '';
-        if (t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li')) return l;
+        if (!t || t.startsWith('<')) return l;
         return `<p>${l}</p>`;
     }).join('');
 
-    return `<!DOCTYPE html><html><head><meta charset="utf-8">
-      <style>
-        body { font-family: sans-serif; line-height: 1.5; padding: 40px; color: #333; }
-        h1 { color: #1e293b; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; margin-bottom: 20px; }
-        h2 { color: #334155; margin-top: 24px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-        p { margin-bottom: 12px; }
-        ul { margin-bottom: 16px; padding-left: 20px; }
-        li { margin-bottom: 6px; }
-      </style>
-      </head><body>${html}</body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;line-height:1.5;padding:40px;color:#333}h1{color:#1e293b;border-bottom:2px solid #3b82f6;padding-bottom:8px}h2{color:#334155;margin-top:24px;border-bottom:1px solid #e2e8f0}</style></head><body>${html}</body></html>`;
 };
 
 const uploadFile = async (name: string, content: string | Blob, type: string, sub: string, toDoc: boolean): Promise<any> => {
-  if (!accessToken) throw new Error("No token");
-  const fId = await ensureFolder(sub);
+  if (!accessToken) throw new Error("No access token");
+  const folderId = await ensureFolder(sub);
   
   const meta = { 
     name: name, 
-    parents: [fId], 
+    parents: [folderId], 
     mimeType: toDoc ? 'application/vnd.google-apps.document' : type 
   };
   
   const boundary = '-------314159265358979323846';
-  const delimiter = `--${boundary}`;
-  const closeDelimiter = `--${boundary}--`;
-
-  const metadataPart = JSON.stringify(meta);
   const mediaContent = content instanceof Blob ? content : new Blob([content], { type });
 
-  // Belangrijk: Geen extra witregel aan het begin van de body
+  // EXACTE MULTIPART FORMATTERING VOOR GOOGLE DRIVE
   const bodyParts: (string | Blob)[] = [
-    `${delimiter}\r\n`,
+    `--${boundary}\r\n`,
     'Content-Type: application/json; charset=UTF-8\r\n\r\n',
-    `${metadataPart}\r\n`,
-    `${delimiter}\r\n`,
+    JSON.stringify(meta) + '\r\n',
+    `--${boundary}\r\n`,
     `Content-Type: ${type}\r\n\r\n`,
     mediaContent,
-    `\r\n${closeDelimiter}`
+    `\r\n--${boundary}--`
   ];
 
   const body = new Blob(bodyParts);
 
-  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
     method: 'POST',
     headers: { 
       Authorization: `Bearer ${accessToken}`, 
@@ -173,7 +160,7 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   
   if (!r.ok) {
      const errText = await r.text();
-     throw new Error(`Drive Upload Failed: ${errText}`);
+     throw new Error(`Upload Failed: ${errText}`);
   }
   
   return await r.json();
