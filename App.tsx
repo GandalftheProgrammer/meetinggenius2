@@ -111,23 +111,25 @@ const App: React.FC = () => {
       const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
       const hours = now.getHours().toString().padStart(2, '0');
       const minutes = now.getMinutes().toString().padStart(2, '0');
-      // Formaat: "12 February 2026 at 18h02m"
       return `${datePart} at ${hours}h${minutes}m`;
   };
 
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
     
+    // We behouden de spaties, maar verwijderen verboden karakters voor systemen
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
-    addLog("Starting auto-sync to Drive...");
+    addLog("Drive sync gestart...");
 
+    // Sequentiële upload om API-limieten en race conditions te voorkomen
+    
     // 1. Audio
     if (blob) {
       try {
         await uploadAudioToDrive(safeTitle, blob);
-        addLog("Audio saved to Drive ✅");
+        addLog("Audio opgeslagen ✅");
       } catch (e) {
-        addLog("Audio sync failed ❌");
+        addLog("Audio sync mislukt ❌");
         console.error(e);
       }
     }
@@ -136,10 +138,11 @@ const App: React.FC = () => {
     if (data.summary && data.summary.length > 0) {
       try {
         const notesMarkdown = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}`;
-        await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
-        addLog("Notes saved to Drive ✅");
+        // Geen underscore voor 'Notes'
+        await uploadTextToDrive(`${safeTitle} Notes`, notesMarkdown, 'Notes');
+        addLog("Notes opgeslagen ✅");
       } catch (e) {
-        addLog("Notes sync failed ❌");
+        addLog("Notes sync mislukt ❌");
         console.error(e);
       }
     }
@@ -147,15 +150,16 @@ const App: React.FC = () => {
     // 3. Transcript
     if (data.transcription && data.transcription.length > 0) {
       try {
-        await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
-        addLog("Transcript saved to Drive ✅");
+        // Geen underscore voor 'Transcript'
+        await uploadTextToDrive(`${safeTitle} Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
+        addLog("Transcript opgeslagen ✅");
       } catch (e) {
-        addLog("Transcript sync failed ❌");
+        addLog("Transcript sync mislukt ❌");
         console.error(e);
       }
     }
     
-    addLog("Sync complete.");
+    addLog("Sync voltooid.");
   };
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
@@ -164,7 +168,6 @@ const App: React.FC = () => {
     const baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
     const timestampStr = getFormattedDateTime(baseDate);
     
-    // Bouw de titel exact op volgens het sjabloon: "[title] on [date] at [time]"
     let baseTitle = title.trim() || "Project meeting";
     let finalTitle = baseTitle;
     
@@ -181,7 +184,7 @@ const App: React.FC = () => {
     }
 
     try {
-      addLog(`Processing with ${selectedModel}...`);
+      addLog(`AI Verwerking gestart...`);
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', mode, selectedModel, addLog);
       
       const updatedData = meetingData ? {
@@ -200,7 +203,7 @@ const App: React.FC = () => {
       }
     } catch (apiError) {
       addLog(`Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
-      setError("Processing failed.");
+      setError("Verwerking mislukt.");
       setAppState(AppState.PAUSED); 
     } finally {
       setIsGeneratingMissing(false);

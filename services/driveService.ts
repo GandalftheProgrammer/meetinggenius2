@@ -94,7 +94,6 @@ const ensureFolder = async (sub: string): Promise<string> => {
     }
 
     if (!mainFolderId) throw new Error("Could not access main folder");
-    
     if (subFolderCache[sub]) return subFolderCache[sub];
 
     const subId = await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
@@ -123,10 +122,12 @@ const convertMarkdownToHtml = (md: string): string => {
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
       <style>
-        body { font-family: sans-serif; line-height: 1.4; padding: 40px; }
-        h1 { color: #1e293b; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        h2 { color: #334155; margin-top: 20px; border-bottom: 1px solid #eee; }
-        li { margin-bottom: 5px; }
+        body { font-family: sans-serif; line-height: 1.5; padding: 40px; color: #333; }
+        h1 { color: #1e293b; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; margin-bottom: 20px; }
+        h2 { color: #334155; margin-top: 24px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+        p { margin-bottom: 12px; }
+        ul { margin-bottom: 16px; padding-left: 20px; }
+        li { margin-bottom: 6px; }
       </style>
       </head><body>${html}</body></html>`;
 };
@@ -135,28 +136,28 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   if (!accessToken) throw new Error("No token");
   const fId = await ensureFolder(sub);
   
-  const cleanName = toDoc ? name.replace(/\.(md|html|txt)$/i, '') : name;
   const meta = { 
-    name: cleanName, 
+    name: name, 
     parents: [fId], 
     mimeType: toDoc ? 'application/vnd.google-apps.document' : type 
   };
   
   const boundary = '-------314159265358979323846';
-  // FIX: Gebruik backticks voor template literals om de boundary correct in te voegen
-  const delimiter = `\r\n--${boundary}\r\n`;
-  const closeDelimiter = `\r\n--${boundary}--`;
+  const delimiter = `--${boundary}`;
+  const closeDelimiter = `--${boundary}--`;
 
   const metadataPart = JSON.stringify(meta);
-  
+  const mediaContent = content instanceof Blob ? content : new Blob([content], { type });
+
+  // Belangrijk: Geen extra witregel aan het begin van de body
   const bodyParts: (string | Blob)[] = [
-    delimiter,
+    `${delimiter}\r\n`,
     'Content-Type: application/json; charset=UTF-8\r\n\r\n',
-    metadataPart,
-    delimiter,
+    `${metadataPart}\r\n`,
+    `${delimiter}\r\n`,
     `Content-Type: ${type}\r\n\r\n`,
-    content instanceof Blob ? content : new Blob([content], { type }),
-    closeDelimiter
+    mediaContent,
+    `\r\n${closeDelimiter}`
   ];
 
   const body = new Blob(bodyParts);
