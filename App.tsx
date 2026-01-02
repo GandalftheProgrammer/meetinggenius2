@@ -7,11 +7,18 @@ import { AppState, MeetingData, ProcessingMode, GeminiModel } from './types';
 import { processMeetingAudio } from './services/geminiService';
 import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disconnectDrive } from './services/driveService';
 import { getActiveSession, recoverAudio, clearSession } from './services/storageService';
-import { AlertCircle, RotateCcw, Trash2, Loader2 } from 'lucide-react';
+import { AlertCircle, RotateCcw, Trash2, Loader2, Calendar } from 'lucide-react';
 
 const App: React.FC = () => {
+  const generateDefaultTitle = () => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('nl-NL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+    return `Meeting - ${dateStr} ${timeStr}`;
+  };
+
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
-  const [title, setTitle] = useState<string>("");
+  const [title, setTitle] = useState<string>(generateDefaultTitle());
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash');
   
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
@@ -80,7 +87,7 @@ const App: React.FC = () => {
   const handleFileUpload = (file: File) => {
       handleRecordingFinished(file);
       setAppState(AppState.PAUSED);
-      if (!title) setTitle(file.name.replace(/\.[^/.]+$/, ""));
+      setTitle(file.name.replace(/\.[^/.]+$/, ""));
   };
 
   const handleManualAudioSave = async () => {
@@ -105,7 +112,7 @@ const App: React.FC = () => {
     }
     
     if (!blob) return;
-    const currentTitle = title.trim() || `Meeting ${new Date().toLocaleString()}`;
+    const currentTitle = title.trim() || generateDefaultTitle();
     setTitle(currentTitle);
     
     setAppState(AppState.PROCESSING);
@@ -131,7 +138,7 @@ const App: React.FC = () => {
     if (audioUrl) URL.revokeObjectURL(audioUrl);
     setAudioUrl(null);
     setMeetingData(null);
-    setTitle("");
+    setTitle(generateDefaultTitle());
     setError(null);
   };
 
@@ -146,8 +153,8 @@ const App: React.FC = () => {
                 <div className="flex items-center gap-3">
                     <AlertCircle className="w-6 h-6 shrink-0"/>
                     <div>
-                        <p className="font-bold text-sm">Herstel opname</p>
-                        <p className="text-xs opacity-90">"{recoveryData.title}" is beschikbaar.</p>
+                        <p className="font-bold text-sm">Herstel eerdere opname?</p>
+                        <p className="text-xs opacity-90">"{recoveryData.title}"</p>
                     </div>
                 </div>
                 <div className="flex gap-2">
@@ -171,8 +178,8 @@ const App: React.FC = () => {
                     <Loader2 className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 text-blue-600 animate-pulse" />
                 </div>
                 <div className="text-center space-y-2">
-                    <h2 className="text-xl font-bold text-slate-800">AI is aan het werk...</h2>
-                    <p className="text-slate-500 max-w-xs mx-auto text-sm">Dit kan een paar minuten duren bij lange opnames. Sluit dit venster niet.</p>
+                    <h2 className="text-xl font-bold text-slate-800">AI analyseert de meeting...</h2>
+                    <p className="text-slate-500 max-w-xs mx-auto text-sm">Dit duurt ongeveer 30-60 seconden.</p>
                 </div>
                 <div className="w-full max-w-xs bg-slate-100 h-1.5 rounded-full overflow-hidden">
                     <div className="bg-blue-600 h-full w-2/3 animate-progress"></div>
@@ -181,8 +188,15 @@ const App: React.FC = () => {
         ) : appState !== AppState.COMPLETED ? (
           <div className="flex flex-col items-center space-y-8">
             <div className="w-full max-w-lg space-y-2">
-              <label className="text-sm font-medium text-slate-700 ml-1">Titel van de meeting</label>
-              <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Bijv. Project X Status" className="w-full px-4 py-3 rounded-xl border border-slate-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 flex items-center gap-2">
+                <Calendar className="w-3.5 h-3.5" /> Meeting Titel
+              </label>
+              <input 
+                type="text" 
+                value={title} 
+                onChange={(e) => setTitle(e.target.value)} 
+                className="w-full px-5 py-4 rounded-2xl border border-slate-200 shadow-sm focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all bg-white text-lg font-medium text-slate-800" 
+              />
             </div>
 
             <Recorder 
@@ -202,7 +216,7 @@ const App: React.FC = () => {
           <Results data={meetingData} title={title} onReset={handleDiscard} onGenerateMissing={handleProcessAudio} isProcessingMissing={false} onSaveAudio={handleManualAudioSave} />
         )}
       </main>
-      <footer className="py-6 text-center text-slate-400 text-xs">MeetingGenius Safe-Guard System &copy; {new Date().getFullYear()}</footer>
+      <footer className="py-6 text-center text-slate-400 text-xs font-medium">MeetingGenius Safe-Guard System &bull; {new Date().getFullYear()}</footer>
     </div>
   );
 };

@@ -1,11 +1,9 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload, ShieldCheck, CloudUpload } from 'lucide-react';
+import { Mic, Square, Loader2, MonitorPlay, Trash2, Circle, FileAudio, ListChecks, FileText, CheckCircle, Upload, ShieldCheck } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import { AppState, ProcessingMode } from '../types';
-import { saveChunk, startNewSession, markSessionComplete, recoverAudio } from '../services/storageService';
-
-const SILENT_AUDIO_URI = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////wAAADFMYXZjNTguNTQuAAAAAAAAAAAAAAAAJAAAAAAAAAAAASAAxIirAAAA//OEAAAAAAAAAAAAAAAAAAAAAAA';
+import { saveChunk, startNewSession, markSessionComplete } from '../services/storageService';
 
 interface RecorderProps {
   appState: AppState;
@@ -39,151 +37,97 @@ const Recorder: React.FC<RecorderProps> = ({
   const [isMobile, setIsMobile] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
-  const [lastAutoBackup, setLastAutoBackup] = useState<number>(0);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
-  const backupTimerRef = useRef<number | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const pendingWritesRef = useRef<number>(0);
 
   useEffect(() => {
     if (!navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent)) {
         setIsMobile(true);
     }
-    
-    const audio = new Audio(SILENT_AUDIO_URI);
-    audio.loop = true;
-    audio.volume = 0.01;
-    silentAudioRef.current = audio;
-
-    return () => {
-      cleanupResources();
-      if (silentAudioRef.current) {
-          silentAudioRef.current.pause();
-          silentAudioRef.current = null;
-      }
-    };
+    return () => cleanup();
   }, []);
 
-  const getSupportedMimeType = () => {
-    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/wav'];
-    for (const type of types) {
-      if (MediaRecorder.isTypeSupported(type)) return type;
-    }
-    return 'audio/webm'; // fallback
-  };
-
-  const cleanupResources = () => {
+  const cleanup = () => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (backupTimerRef.current) clearInterval(backupTimerRef.current);
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close();
-    }
+    if (stream) stream.getTracks().forEach(t => t.stop());
   };
 
   const startRecording = async () => {
     try {
-      await startNewSession(meetingTitle);
+      cleanup();
+      chunksRef.current = [];
       
-      if (silentAudioRef.current) {
-          silentAudioRef.current.play().catch(console.warn);
-      }
-
       let finalStream: MediaStream;
       if (audioSource === 'system') {
         const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const audioCtx = new AudioContext();
-        audioContextRef.current = audioCtx;
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
         const dest = audioCtx.createMediaStreamDestination();
         audioCtx.createMediaStreamSource(displayStream).connect(dest);
         audioCtx.createMediaStreamSource(micStream).connect(dest);
         finalStream = dest.stream;
-        streamRef.current = displayStream;
       } else {
         finalStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        streamRef.current = finalStream;
       }
       
       setStream(finalStream);
       
-      const mimeType = getSupportedMimeType();
-      const mediaRecorder = new MediaRecorder(finalStream, { mimeType, audioBitsPerSecond: 128000 });
-      mediaRecorderRef.current = mediaRecorder;
+      // Kies het beste formaat dat de browser ondersteunt
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus' 
+        : MediaRecorder.isTypeSupported('audio/mp4') 
+          ? 'audio/mp4' 
+          : '';
 
-      mediaRecorder.ondataavailable = async (e) => {
+      const recorder = new MediaRecorder(finalStream, mimeType ? { mimeType } : {});
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
-          pendingWritesRef.current++;
-          try {
-            await saveChunk(e.data);
-          } finally {
-            pendingWritesRef.current--;
-          }
+          chunksRef.current.push(e.data);
+          // Optioneel: schrijf ook naar IndexedDB voor extra veiligheid
+          saveChunk(e.data).catch(() => {});
         }
       };
 
-      mediaRecorder.start(3000); // Kortere chunks (3s) voor betere stabiliteit
+      recorder.onstop = async () => {
+        const finalBlob = new Blob(chunksRef.current, { type: chunksRef.current[0]?.type || 'audio/webm' });
+        onRecordingFinished(finalBlob);
+        await markSessionComplete();
+      };
+
+      await startNewSession(meetingTitle);
+      recorder.start(1000); // Verzamel elke seconde data
       setIsRecording(true);
       onRecordingChange(true);
       
+      setRecordingTime(0);
       const start = Date.now();
       timerRef.current = window.setInterval(() => {
         setRecordingTime(Math.floor((Date.now() - start) / 1000));
       }, 1000);
 
-      backupTimerRef.current = window.setInterval(async () => {
-        if (onSaveAudio) {
-            await onSaveAudio(true);
-            setLastAutoBackup(Date.now());
-        }
-      }, 120000);
-
     } catch (error) {
-      console.error("Recording error:", error);
+      console.error("Fout bij starten opname:", error);
       alert("Kon de opname niet starten. Controleer je microfoon-rechten.");
     }
   };
 
-  const stopRecording = useCallback(async () => {
+  const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      const recorder = mediaRecorderRef.current;
-      
-      const stopPromise = new Promise(resolve => {
-          recorder.onstop = resolve;
-          recorder.stop();
-      });
-
-      await stopPromise;
-
-      // WACOHT op alle lopende IndexedDB schrijfacties
-      let waitAttempts = 0;
-      while (pendingWritesRef.current > 0 && waitAttempts < 50) {
-          await new Promise(r => setTimeout(r, 100));
-          waitAttempts++;
-      }
-
-      await markSessionComplete();
-      
-      if (silentAudioRef.current) silentAudioRef.current.pause();
-
-      const recovered = await recoverAudio();
-      if (recovered && recovered.blob.size > 1000) {
-          onRecordingFinished(recovered.blob);
-      } else {
-          alert("De opname is mislukt of te kort. Probeer het opnieuw.");
-      }
-
-      cleanupResources();
-      setStream(null);
+      mediaRecorderRef.current.stop();
       setIsRecording(false);
       onRecordingChange(false);
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        setStream(null);
+      }
     }
-  }, [onRecordingChange, onRecordingFinished]);
+  };
 
   const toggleRecording = () => isRecording ? stopRecording() : startRecording();
 
@@ -204,57 +148,51 @@ const Recorder: React.FC<RecorderProps> = ({
   };
 
   return (
-    <div className="w-full max-w-lg mx-auto bg-white rounded-2xl shadow-xl border border-slate-100 p-6 md:p-8 flex flex-col items-center">
+    <div className="w-full max-w-lg mx-auto bg-white rounded-3xl shadow-2xl border border-slate-100 p-8 flex flex-col items-center">
       
       {!isRecording && !audioUrl && (
-        <div className="w-full mb-6">
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            <button onClick={() => setAudioSource('microphone')} className={`flex-1 py-2 px-4 rounded-md text-sm font-medium ${audioSource === 'microphone' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}><Mic className="w-4 h-4 inline mr-2"/>Mic</button>
-            {!isMobile && <button onClick={() => setAudioSource('system')} className={`flex-1 py-2 px-4 rounded-md text-sm font-medium ${audioSource === 'system' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}><MonitorPlay className="w-4 h-4 inline mr-2"/>Systeem</button>}
+        <div className="w-full mb-8">
+          <div className="flex bg-slate-100 p-1.5 rounded-2xl">
+            <button onClick={() => setAudioSource('microphone')} className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all ${audioSource === 'microphone' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}><Mic className="w-4 h-4 inline mr-2"/>Microfoon</button>
+            {!isMobile && <button onClick={() => setAudioSource('system')} className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold transition-all ${audioSource === 'system' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500'}`}><MonitorPlay className="w-4 h-4 inline mr-2"/>Systeem</button>}
           </div>
         </div>
       )}
 
-      <div className="w-full h-24 mb-6 bg-slate-50 rounded-xl flex items-center justify-center border border-slate-100 overflow-hidden relative">
+      <div className="w-full h-32 mb-8 bg-slate-50 rounded-2xl flex items-center justify-center border-2 border-slate-100 overflow-hidden relative">
         <AudioVisualizer stream={stream} isRecording={isRecording} />
         {isRecording && (
-            <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 bg-green-500/10 text-green-600 text-[10px] font-bold rounded-full border border-green-500/20 animate-pulse">
-                <ShieldCheck className="w-3 h-3" /> BEVEILIGING ACTIEF
+            <div className="absolute top-3 right-3 flex items-center gap-1.5 px-3 py-1.5 bg-green-500 text-white text-[10px] font-black rounded-full shadow-lg animate-pulse">
+                <ShieldCheck className="w-3.5 h-3.5" /> OPNAME ACTIEF
             </div>
         )}
       </div>
 
-      <div className={`text-5xl font-mono font-semibold mb-2 ${isRecording ? 'text-red-500' : 'text-slate-700'}`}>
+      <div className={`text-6xl font-mono font-bold mb-8 tracking-tighter ${isRecording ? 'text-red-500' : 'text-slate-800'}`}>
         {formatTime(recordingTime)}
       </div>
 
-      <div className="flex flex-col items-center justify-center w-full mb-6 gap-4">
-        <button onClick={toggleRecording} className={`w-20 h-20 rounded-full shadow-md flex items-center justify-center transition-all ${isRecording ? 'bg-slate-900 hover:bg-slate-800' : 'bg-red-500 hover:bg-red-600'}`}>
-          {isRecording ? <Square className="w-8 h-8 text-white fill-current" /> : <Circle className="w-8 h-8 text-white fill-current" />}
+      <div className="flex flex-col items-center justify-center w-full mb-8 gap-6">
+        <button onClick={toggleRecording} className={`w-24 h-24 rounded-full shadow-xl flex items-center justify-center transition-all active:scale-95 ${isRecording ? 'bg-slate-900 hover:bg-black ring-8 ring-slate-100' : 'bg-red-500 hover:bg-red-600 ring-8 ring-red-50'}`}>
+          {isRecording ? <Square className="w-10 h-10 text-white fill-current" /> : <Circle className="w-10 h-10 text-white fill-current" />}
         </button>
         
         {!isRecording && !audioUrl && (
-            <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 text-slate-500 hover:text-blue-600 text-sm font-medium">
-                <Upload className="w-4 h-4" /> Upload Bestand
+            <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 text-sm font-bold transition-colors">
+                <Upload className="w-4 h-4" /> BESTAND IMPORTEREN
                 <input type="file" accept="audio/*" ref={fileInputRef} onChange={(e) => e.target.files?.[0] && onFileUpload(e.target.files[0])} className="hidden" />
             </button>
         )}
       </div>
 
       {!isRecording && audioUrl && (
-        <div className="w-full border-t border-slate-100 pt-6 animate-in slide-in-from-top-4">
-          <audio controls src={audioUrl} className="w-full h-10 mb-6 shadow-sm rounded-lg" />
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl text-blue-700 font-semibold text-sm flex flex-col items-center"><ListChecks className="mb-1"/>Samenvatten</button>
-            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl text-purple-700 font-semibold text-sm flex flex-col items-center"><FileText className="mb-1"/>Transcript</button>
+        <div className="w-full border-t border-slate-100 pt-8 animate-in slide-in-from-bottom-4">
+          <audio controls src={audioUrl} className="w-full h-12 mb-8 shadow-sm rounded-xl" />
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="p-4 bg-blue-600 hover:bg-blue-700 rounded-2xl text-white font-bold text-sm flex flex-col items-center gap-2 shadow-lg transition-all active:scale-95"><ListChecks className="w-5 h-5"/>Samenvatten</button>
+            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="p-4 bg-purple-600 hover:bg-purple-700 rounded-2xl text-white font-bold text-sm flex flex-col items-center gap-2 shadow-lg transition-all active:scale-95"><FileText className="w-5 h-5"/>Transcript</button>
           </div>
-          {onSaveAudio && (
-              <button onClick={handleManualSave} disabled={isSaving || isSaved} className={`w-full py-2 px-4 rounded-lg text-sm font-medium flex items-center justify-center gap-2 border ${isSaved ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white text-slate-700 hover:bg-slate-50'}`}>
-                 {isSaving ? <Loader2 className="animate-spin w-4 h-4"/> : isSaved ? <CheckCircle className="w-4 h-4"/> : <FileAudio className="w-4 h-4"/>}
-                 {isSaved ? "In Drive!" : "Save naar Drive"}
-              </button>
-          )}
-          <button onClick={onDiscard} className="w-full mt-3 py-2 text-sm text-red-500 font-medium flex items-center justify-center gap-2 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /> Weggooien</button>
+          <button onClick={onDiscard} className="w-full mt-4 py-3 text-sm text-red-500 font-bold flex items-center justify-center gap-2 hover:bg-red-50 rounded-xl transition-colors"><Trash2 className="w-4 h-4" /> Verwijderen</button>
         </div>
       )}
     </div>
