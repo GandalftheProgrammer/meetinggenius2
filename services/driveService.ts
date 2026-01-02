@@ -1,4 +1,3 @@
-
 import { GoogleUser } from '../types';
 
 declare const google: any;
@@ -100,13 +99,11 @@ const ensureFolder = async (sub: string): Promise<string> => {
 };
 
 const convertMarkdownToHtml = (md: string): string => {
-    // We converteren Markdown naar simpele HTML tags. 
-    // GEEN head, GEEN body, GEEN style. Alleen de tags.
-    // Google Docs pakt dit op als basisopmaak.
-    return md.trim()
-        .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-        .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-        .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+    // Basic Markdown conversion with targeted HTML for Google Docs
+    const innerHtml = md.trim()
+        .replace(/^# (.*$)/gm, '<h1 class="title">$1</h1>')
+        .replace(/^## (.*$)/gm, '<h2 class="header">$2</h2>')
+        .replace(/^### (.*$)/gm, '<h3 class="subheader">$3</h3>')
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
         .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
         .replace(/- (.*$)/gm, '<li>$1</li>')
@@ -115,9 +112,64 @@ const convertMarkdownToHtml = (md: string): string => {
         .map(l => {
             const t = l.trim();
             if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li')) return l;
-            return `<p>${l}</p>`;
+            return `<p class="body-text">${l}</p>`;
         })
         .join('');
+
+    // Wrap with a professional style block that Google Docs import respects
+    return `
+<html>
+<head>
+    <style>
+        body {
+            font-family: 'Roboto', 'Arial', sans-serif;
+            color: #334155;
+            line-height: 1.6;
+            margin: 40px;
+        }
+        .title {
+            color: #1e3a8a;
+            font-size: 24pt;
+            font-weight: bold;
+            border-bottom: 1pt solid #e2e8f0;
+            padding-bottom: 8pt;
+            margin-bottom: 20pt;
+        }
+        .header {
+            color: #1e3a8a;
+            font-size: 16pt;
+            font-weight: bold;
+            margin-top: 24pt;
+            margin-bottom: 12pt;
+        }
+        .subheader {
+            color: #475569;
+            font-size: 13pt;
+            font-weight: bold;
+            margin-top: 16pt;
+        }
+        .body-text {
+            font-size: 11pt;
+            margin-bottom: 10pt;
+        }
+        strong {
+            color: #1e293b;
+            font-weight: bold;
+        }
+        ul {
+            margin-bottom: 12pt;
+        }
+        li {
+            font-size: 11pt;
+            margin-bottom: 4pt;
+        }
+    </style>
+</head>
+<body>
+    ${innerHtml}
+</body>
+</html>
+    `.trim();
 };
 
 const uploadFile = async (name: string, content: string | Blob, type: string, sub: string, toDoc: boolean): Promise<any> => {

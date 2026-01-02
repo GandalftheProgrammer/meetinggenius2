@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Recorder from './components/Recorder';
@@ -39,7 +38,8 @@ const App: React.FC = () => {
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     
-    return `${day} ${month} ${year} - ${hours}h${minutes}m`;
+    // Updated to use "at" as requested
+    return `${day} ${month} ${year} at ${hours}h${minutes}m`;
   };
 
   useEffect(() => {
@@ -119,7 +119,8 @@ const App: React.FC = () => {
     
     const startTime = sessionStartTime || new Date();
     const dateString = formatMeetingDateTime(startTime);
-    const safeBaseName = `${currentTitle} (${dateString})`.replace(/[/\\?%*:|"<>]/g, '-');
+    // Updated to follow "[title] on [date] at [time]"
+    const safeBaseName = `${currentTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
 
     addLog(`Cloud Storage: Syncing...`);
 
@@ -150,7 +151,6 @@ const App: React.FC = () => {
     // 3. Transcript
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      // Fix: transcriptMarkdown must be declared with 'let' because it is reassigned below using +=
       let transcriptMarkdown = `# Transcript: ${currentTitle}\n`;
       transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription}`;
       uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
@@ -247,6 +247,7 @@ const App: React.FC = () => {
             onConnectDrive={handleConnectDrive}
             audioBlob={combinedBlob}
             initialMode={lastRequestedMode}
+            sessionDateString={sessionStartTime ? formatMeetingDateTime(sessionStartTime) : formatMeetingDateTime(new Date())}
           />
         )}
       </main>

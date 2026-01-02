@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FileText, ListChecks, ArrowLeft, FileAudio, Download, Eye } from 'lucide-react';
@@ -14,6 +13,7 @@ interface ResultsProps {
   onConnectDrive: () => void;
   audioBlob: Blob | null;
   initialMode?: ProcessingMode;
+  sessionDateString?: string;
 }
 
 const Results: React.FC<ResultsProps> = ({ 
@@ -21,7 +21,8 @@ const Results: React.FC<ResultsProps> = ({
   title, 
   onReset, 
   audioBlob,
-  initialMode = 'NOTES_ONLY'
+  initialMode = 'NOTES_ONLY',
+  sessionDateString = ''
 }) => {
   // Track visibility of each column
   const [showNotes, setShowNotes] = useState(initialMode !== 'TRANSCRIPT_ONLY');
@@ -50,7 +51,9 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     const link = document.createElement('a');
     link.href = url;
     const extension = blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm';
-    link.download = `${title.replace(/\s+/g, '_')}_${suffix}.${extension}`;
+    // Updated filename format to follow requested "[title] on [date] at [time] - [type]"
+    const fileName = `${title} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
+    link.download = `${fileName}.${extension}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -58,22 +61,23 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   };
 
   const downloadAsDoc = (markdown: string, suffix: string) => {
-    // Basic markdown to minimal HTML for Word compatibility
     const htmlBody = markdown
-      .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-      .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+      .replace(/^# (.*$)/gm, '<h1 style="color:#1e3a8a; border-bottom:1pt solid #e2e8f0; padding-bottom:10px;">$1</h1>')
+      .replace(/^## (.*$)/gm, '<h2 style="color:#1e3a8a; margin-top:20px;">$1</h2>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
       .replace(/- (.*$)/gm, '<li>$1</li>')
       .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
       .split('\n').join('<br>');
 
-    const htmlContent = `<html><body style="font-family:Arial">${htmlBody}</body></html>`;
+    const htmlContent = `<html><body style="font-family:Arial, sans-serif; color:#334155; line-height:1.6; padding:20px;">${htmlBody}</body></html>`;
     const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${title.replace(/\s+/g, '_')}_${suffix}.doc`;
+    // Updated filename format to follow requested "[title] on [date] at [time] - [type]"
+    const fileName = `${title} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
+    link.download = `${fileName}.doc`;
     link.click();
   };
 
@@ -104,7 +108,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2">
            {audioBlob && <button onClick={() => downloadBlob(audioBlob, 'audio')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><FileAudio className="w-4 h-4" />Audio</button>}
            {hasNotes && <button onClick={() => downloadAsDoc(notesMarkdown, 'notes')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Notes</button>}
-           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcript')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
+           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcription')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
         </div>
       </div>
 
@@ -117,7 +121,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
             {showNotes ? (
-              hasNotes ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{notesMarkdown}</ReactMarkdown></div> : <p className="text-slate-400 italic">No notes data...</p>
+              hasNotes ? <div className="prose prose-professional prose-sm max-w-none"><ReactMarkdown>{notesMarkdown}</ReactMarkdown></div> : <p className="text-slate-400 italic">No notes data...</p>
             ) : renderRevealButton('notes')}
           </div>
         </div>
@@ -130,7 +134,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
             {showTranscript ? (
-              hasTranscript ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{data.transcription}</ReactMarkdown></div> : <p className="text-slate-400 italic">No transcript data...</p>
+              hasTranscript ? <div className="prose prose-professional prose-sm max-w-none"><ReactMarkdown>{data.transcription}</ReactMarkdown></div> : <p className="text-slate-400 italic">No transcript data...</p>
             ) : renderRevealButton('transcript')}
           </div>
         </div>
