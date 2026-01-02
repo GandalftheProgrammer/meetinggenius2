@@ -41,6 +41,7 @@ const Recorder: React.FC<RecorderProps> = ({
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent)) {
@@ -58,6 +59,13 @@ const Recorder: React.FC<RecorderProps> = ({
       }
     };
   }, []);
+
+  // Auto-scroll for logs
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [debugLogs]);
 
   const cleanupResources = () => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -180,15 +188,25 @@ const Recorder: React.FC<RecorderProps> = ({
               <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
             </div>
             <div className="text-center">
-              <p className="text-slate-800 font-semibold text-lg">Processing Audio</p>
-              <p className="text-slate-500 text-sm">Generating Notes & Transcription...</p>
+              <p className="text-slate-800 font-bold text-xl tracking-tight">AI Pipeline Active</p>
+              <p className="text-slate-500 text-sm font-medium">Please wait while we process your meeting...</p>
             </div>
          </div>
-         {debugLogs.length > 0 && (
-           <div className="w-full bg-slate-900 text-slate-300 p-3 rounded-lg text-xs font-mono max-h-32 overflow-y-auto custom-scrollbar">
-              {debugLogs.map((log, i) => <div key={i} className="border-b border-slate-800 last:border-0 py-1">{log}</div>)}
-           </div>
-         )}
+         <div className="w-full bg-slate-900 text-slate-300 p-4 rounded-xl text-[11px] font-mono h-48 overflow-y-auto custom-scrollbar border border-slate-800 shadow-inner">
+            {debugLogs.length > 0 ? (
+              <>
+                {debugLogs.map((log, i) => (
+                  <div key={i} className="mb-1 opacity-90 border-b border-slate-800 pb-1 last:border-0">
+                    <span className="text-blue-400 mr-2">[{i+1}]</span>
+                    {log}
+                  </div>
+                ))}
+                <div ref={logsEndRef} />
+              </>
+            ) : (
+              <div className="text-slate-600">Waiting for first log...</div>
+            )}
+         </div>
       </div>
     );
   }
@@ -218,13 +236,6 @@ const Recorder: React.FC<RecorderProps> = ({
               <MonitorPlay className="w-4 h-4" />
               System + Mic
             </button>
-          </div>
-           <div className="mt-2 text-center">
-             {audioSource === 'microphone' ? (
-               <p className="text-xs text-slate-400">Physical conversations or desktop apps via speakers.</p>
-             ) : (
-               <p className="text-xs text-slate-400">Records browser tab audio AND your mic simultaneously.</p>
-             )}
           </div>
         </div>
       )}
@@ -266,21 +277,21 @@ const Recorder: React.FC<RecorderProps> = ({
         <div className="w-full border-t border-slate-100 pt-6 animate-in slide-in-from-top-4 duration-300 text-center">
           {audioUrl && (
             <div className="w-full bg-slate-50 p-3 rounded-xl border border-slate-200 mb-6 flex flex-col gap-2">
-              <span className="text-xs font-semibold text-slate-500 ml-1 uppercase tracking-wide">Preview</span>
+              <span className="text-xs font-semibold text-slate-500 ml-1 uppercase tracking-wide text-left">Preview</span>
               <audio controls src={audioUrl} className="w-full h-8" />
             </div>
           )}
           <div className="grid grid-cols-2 gap-3 w-full mb-3">
-            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700">
+            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700 shadow-sm">
               <ListChecks className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
-              <span className="font-semibold text-sm">Summary</span>
+              <span className="font-bold text-sm">Summary</span>
             </button>
-            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="flex flex-col items-center justify-center p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-all group text-purple-700">
+            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="flex flex-col items-center justify-center p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-all group text-purple-700 shadow-sm">
               <FileText className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
-              <span className="font-semibold text-sm">Transcription</span>
+              <span className="font-bold text-sm">Transcription</span>
             </button>
           </div>
-          <button onClick={onDiscard} className="w-full py-2 px-4 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 hover:text-red-700 border border-transparent hover:border-red-100 transition-colors flex items-center justify-center gap-2">
+          <button onClick={onDiscard} className="w-full py-2 px-4 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 hover:text-red-700 transition-colors flex items-center justify-center gap-2">
             <Trash2 className="w-4 h-4" />
             Discard & Start Over
           </button>

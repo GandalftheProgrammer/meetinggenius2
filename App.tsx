@@ -20,17 +20,27 @@ const App: React.FC = () => {
   const [combinedBlob, setCombinedBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   
-  const [isGeneratingMissing, setIsGeneratingMissing] = useState(false);
-  
-  const [isUploadedFile, setIsUploadedFile] = useState(false);
-  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
-  const [uploadedFileDate, setUploadedFileDate] = useState<Date | null>(null);
-  
   const [isDriveConnected, setIsDriveConnected] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null);
 
   const addLog = (msg: string) => {
-    setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString('en-GB')} ${msg}`]);
+    setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString('en-GB')} - ${msg}`]);
+  };
+
+  // Helper to format date like "12 February 2026 at 18h02m"
+  const formatMeetingDateTime = (date: Date) => {
+    const day = date.getDate();
+    const months = [
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December"
+    ];
+    const month = months[date.getMonth()];
+    const year = date.getFullYear();
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    
+    return `${day} ${month} ${year} at ${hours}h${minutes}m`;
   };
 
   useEffect(() => {
@@ -86,10 +96,9 @@ const App: React.FC = () => {
       setCombinedBlob(file);
       const url = URL.createObjectURL(file);
       setAudioUrl(url);
-      setIsUploadedFile(true);
-      setUploadedFileDate(new Date(file.lastModified));
       setAppState(AppState.PAUSED);
-      addLog(`New file: ${file.name}`);
+      setSessionStartTime(new Date(file.lastModified));
+      addLog(`File received: ${file.name}`);
       if (!title) {
           setTitle(file.name.replace(/\.[^/.]+$/, ""));
       }
@@ -97,8 +106,7 @@ const App: React.FC = () => {
 
   const handleRecordingChange = (isRecording: boolean) => {
     if (isRecording) {
-      setRecordingStartTime(new Date());
-      setIsUploadedFile(false);
+      setSessionStartTime(new Date());
       setAppState(AppState.RECORDING);
     } else {
        if (appState === AppState.RECORDING) {
@@ -110,29 +118,39 @@ const App: React.FC = () => {
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
     
-    const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
-    addLog("Initiating Drive cloud sync...");
+    const startTime = sessionStartTime || new Date();
+    const dateString = formatMeetingDateTime(startTime);
+    const baseName = `${currentTitle} on ${dateString}`;
+    const safeBaseName = baseName.replace(/[/\\?%*:|"<>]/g, '-');
+
+    addLog(`Cloud Storage: Synching to folder...`);
 
     // 1. Audio
     if (blob) {
-      uploadAudioToDrive(safeTitle, blob)
-        .then(() => addLog("Audio synced successfully."))
-        .catch(e => addLog("Audio sync failed."));
+      const audioName = `${safeBaseName} - audio`;
+      addLog(`Syncing Audio: ${audioName}`);
+      uploadAudioToDrive(audioName, blob)
+        .then(() => addLog("Drive: Audio sync OK."))
+        .catch(() => addLog("Drive: Audio sync FAILED."));
     }
 
     // 2. Notes
     if (data.summary) {
+      const notesName = `${safeBaseName} - notes`;
       const notesMarkdown = `# Notes: ${currentTitle}\n\n${data.summary}\n\n## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
-      uploadTextToDrive(`${safeTitle} Notes`, notesMarkdown, 'Notes')
-        .then(() => addLog("Notes synced successfully."))
-        .catch(e => addLog("Notes sync failed."));
+      addLog(`Syncing Notes: ${notesName}`);
+      uploadTextToDrive(notesName, notesMarkdown, 'Notes')
+        .then(() => addLog("Drive: Notes sync OK."))
+        .catch(() => addLog("Drive: Notes sync FAILED."));
     }
 
     // 3. Transcript
     if (data.transcription) {
-      uploadTextToDrive(`${safeTitle} Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts')
-        .then(() => addLog("Transcript synced successfully."))
-        .catch(e => addLog("Transcript sync failed."));
+      const transcriptName = `${safeBaseName} - transcription`;
+      addLog(`Syncing Transcript: ${transcriptName}`);
+      uploadTextToDrive(transcriptName, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts')
+        .then(() => addLog("Drive: Transcript sync OK."))
+        .catch(() => addLog("Drive: Transcript sync FAILED."));
     }
   };
 
@@ -140,14 +158,13 @@ const App: React.FC = () => {
     if (!combinedBlob) return;
     
     setLastRequestedMode(mode);
-    let finalTitle = title.trim() || "New Meeting";
+    let finalTitle = title.trim() || "Meeting";
     setTitle(finalTitle);
 
     setAppState(AppState.PROCESSING);
 
     try {
-      addLog(`Starting background analysis (requested: ${mode})...`);
-      // We always process EVERYTHING ('ALL') in the background
+      addLog("Starting full analysis pipeline...");
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', 'ALL', selectedModel, addLog);
       
       setMeetingData(newData);
@@ -157,8 +174,8 @@ const App: React.FC = () => {
         autoSyncToDrive(newData, finalTitle, combinedBlob);
       }
     } catch (apiError) {
-      addLog(`Critical Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
-      setError("Analysis failed.");
+      addLog(`Fatal Pipeline Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
+      setError("Analysis failed. See debug log.");
       setAppState(AppState.PAUSED); 
     }
   };
@@ -172,6 +189,7 @@ const App: React.FC = () => {
     setDebugLogs([]);
     setTitle("");
     setError(null);
+    setSessionStartTime(null);
   };
 
   return (
@@ -185,21 +203,21 @@ const App: React.FC = () => {
       />
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
         {error && (
-          <div className="max-w-md mx-auto mb-8 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-center text-sm">
+          <div className="max-w-md mx-auto mb-8 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-center text-sm font-medium">
             {error}
           </div>
         )}
         {appState !== AppState.COMPLETED && (
           <div className="flex flex-col items-center space-y-8 animate-in fade-in duration-500">
             <div className="w-full max-w-lg space-y-2">
-              <label htmlFor="title" className="block text-sm font-medium text-slate-700 ml-1">Title</label>
+              <label htmlFor="title" className="block text-sm font-semibold text-slate-600 ml-1">Meeting Title</label>
               <input
                 type="text"
                 id="title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="f.i. Project Update"
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="f.i. Strategy Brainstorm"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                 disabled={appState === AppState.PROCESSING || appState === AppState.RECORDING}
               />
             </div>
@@ -220,8 +238,8 @@ const App: React.FC = () => {
             data={meetingData} 
             title={title} 
             onReset={handleDiscard}
-            onGenerateMissing={handleProcessAudio}
-            isProcessingMissing={isGeneratingMissing} 
+            onGenerateMissing={() => {}} 
+            isProcessingMissing={false}
             isDriveConnected={isDriveConnected}
             onConnectDrive={handleConnectDrive}
             audioBlob={combinedBlob}
@@ -229,8 +247,8 @@ const App: React.FC = () => {
           />
         )}
       </main>
-      <footer className="py-6 text-center text-slate-400 text-sm">
-        &copy; {new Date().getFullYear()} MeetingGenius.
+      <footer className="py-6 text-center text-slate-400 text-xs font-medium tracking-wide uppercase">
+        MeetingGenius Cloud v2.1
       </footer>
     </div>
   );

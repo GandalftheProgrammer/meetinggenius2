@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, Download, Eye } from 'lucide-react';
+import { FileText, ListChecks, ArrowLeft, FileAudio, Download, Eye } from 'lucide-react';
 import { MeetingData, ProcessingMode } from '../types';
 
 interface ResultsProps {
@@ -20,36 +20,30 @@ const Results: React.FC<ResultsProps> = ({
   data, 
   title, 
   onReset, 
-  onGenerateMissing,
-  isProcessingMissing,
   audioBlob,
   initialMode = 'NOTES_ONLY'
 }) => {
-  // Use state to track which columns are "revealed"
+  // Track visibility of each column
   const [showNotes, setShowNotes] = useState(initialMode !== 'TRANSCRIPT_ONLY');
   const [showTranscript, setShowTranscript] = useState(initialMode !== 'NOTES_ONLY');
 
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
 
-  const getNotesMarkdown = () => {
-    if (!hasNotes) return "";
-    return `
+  const notesMarkdown = `
 # Meeting Notes: ${title}
 
 ## Summary
 ${data.summary}
 
-## Conclusions & Insights
+## Conclusions
 ${data.conclusions.map(d => `- ${d}`).join('\n')}
 
 ## Action Items
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
-    `.trim();
-  };
+  `.trim();
 
-  const notesMarkdown = getNotesMarkdown();
-  const transcriptionMarkdown = `# Transcript: ${title}\n\n${data.transcription}`;
+  const transcriptMarkdown = `# Transcript: ${title}\n\n${data.transcription}`;
 
   const downloadBlob = (blob: Blob, suffix: string) => {
     const url = URL.createObjectURL(blob);
@@ -64,111 +58,80 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   };
 
   const downloadAsDoc = (markdown: string, suffix: string) => {
+    // Basic markdown to minimal HTML for Word compatibility
     const htmlBody = markdown
       .replace(/^# (.*$)/gm, '<h1>$1</h1>')
       .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-      .replace(/^### (.*$)/gm, '<h3>$1</h3>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
       .replace(/- (.*$)/gm, '<li>$1</li>')
       .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
-      .split('\n')
-      .map(line => {
-        const t = line.trim();
-        if (!t) return '';
-        if (t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li')) return line;
-        return `<p>${line}</p>`;
-      })
-      .join('');
+      .split('\n').join('<br>');
 
-    const htmlContent = `
-      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-      <head><meta charset='utf-8'><title>${title}</title>
-      <style>
-        body { font-family: Arial, sans-serif; line-height: 1.4; color: #333; padding: 40px; }
-        h1 { color: #1e293b; font-size: 24pt; margin: 0 0 12pt 0; font-weight: bold; }
-        h2 { color: #334155; font-size: 18pt; margin: 16pt 0 6pt 0; border-bottom: 1px solid #eee; font-weight: bold; }
-        h3 { color: #475569; font-size: 14pt; margin: 12pt 0 4pt 0; font-weight: bold; }
-        p { margin: 0 0 8pt 0; }
-        ul { margin: 0 0 10pt 0; padding-left: 20pt; }
-        li { margin-bottom: 3pt; }
-      </style>
-      </head><body>${htmlBody}</body></html>
-    `;
-
+    const htmlContent = `<html><body style="font-family:Arial">${htmlBody}</body></html>`;
     const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     link.download = `${title.replace(/\s+/g, '_')}_${suffix}.doc`;
-    document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
 
-  const renderPlaceholder = (type: 'notes' | 'transcript') => {
-    const isNotes = type === 'notes';
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-4 p-8 border-2 border-dashed border-slate-100 rounded-xl bg-slate-50/50">
-        <div className="p-3 bg-white rounded-full shadow-sm">
-           {isNotes ? <ListChecks className="w-6 h-6 text-slate-300" /> : <FileText className="w-6 h-6 text-slate-300" />}
-        </div>
-        <div className="text-center">
-          <p className="text-slate-600 font-medium mb-3">
-            {isNotes ? "Notes hidden" : "Transcript hidden"}
-          </p>
-          <button 
-            onClick={() => isNotes ? setShowNotes(true) : setShowTranscript(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-blue-600 hover:text-blue-700 hover:border-blue-300 rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow"
-          >
-            <Eye className="w-4 h-4" />
-            Show {isNotes ? "Notes" : "Transcript"}
-          </button>
-        </div>
+  const renderRevealButton = (type: 'notes' | 'transcript') => (
+    <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-4 p-8 border-2 border-dashed border-slate-100 rounded-xl bg-slate-50/50">
+      <div className="p-3 bg-white rounded-full shadow-sm">
+         {type === 'notes' ? <ListChecks className="w-6 h-6 text-slate-300" /> : <FileText className="w-6 h-6 text-slate-300" />}
       </div>
-    );
-  };
+      <div className="text-center">
+        <p className="text-slate-600 font-medium mb-3">
+          {type === 'notes' ? "Summary is ready" : "Transcript is ready"}
+        </p>
+        <button 
+          onClick={() => type === 'notes' ? setShowNotes(true) : setShowTranscript(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-lg text-sm font-semibold shadow-sm"
+        >
+          <Eye className="w-4 h-4" />
+          Reveal {type === 'notes' ? "Summary" : "Transcript"}
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="w-full max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-8 duration-500">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-        <button onClick={onReset} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors text-sm font-medium"><ArrowLeft className="w-4 h-4" />New meeting</button>
+        <button onClick={onReset} className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors text-sm font-medium"><ArrowLeft className="w-4 h-4" />Back to record</button>
         <div className="flex flex-wrap items-center gap-2">
-           {audioBlob && <button onClick={() => downloadBlob(audioBlob, 'audio')} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-sm font-semibold transition-all shadow-sm"><FileAudio className="w-4 h-4" />Audio</button>}
-           {hasNotes && <button onClick={() => downloadAsDoc(notesMarkdown, 'notes')} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Notes</button>}
-           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptionMarkdown, 'transcript')} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
+           {audioBlob && <button onClick={() => downloadBlob(audioBlob, 'audio')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><FileAudio className="w-4 h-4" />Audio</button>}
+           {hasNotes && <button onClick={() => downloadAsDoc(notesMarkdown, 'notes')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Notes (.doc)</button>}
+           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcript')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript (.doc)</button>}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 h-[calc(100vh-220px)] min-h-[500px]">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[calc(100vh-250px)] min-h-[500px]">
         {/* NOTES COLUMN */}
         <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ListChecks className={`w-5 h-5 ${showNotes ? 'text-blue-500' : 'text-slate-300'}`} />
-              <h2 className={`font-semibold ${showNotes ? 'text-slate-800' : 'text-slate-400'}`}>Structured Notes</h2>
-            </div>
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
+            <ListChecks className="w-5 h-5 text-blue-500" />
+            <h2 className="font-bold text-slate-800">Structured Notes</h2>
           </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
             {showNotes ? (
               hasNotes ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{notesMarkdown}</ReactMarkdown></div> : <p className="text-slate-400 italic">No notes data...</p>
-            ) : renderPlaceholder('notes')}
+            ) : renderRevealButton('notes')}
           </div>
         </div>
 
         {/* TRANSCRIPT COLUMN */}
         <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <FileText className={`w-5 h-5 ${showTranscript ? 'text-purple-500' : 'text-slate-300'}`} />
-              <h2 className={`font-semibold ${showTranscript ? 'text-slate-800' : 'text-slate-400'}`}>Full Transcription</h2>
-            </div>
+          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
+            <FileText className="w-5 h-5 text-purple-500" />
+            <h2 className="font-bold text-slate-800">Full Transcription</h2>
           </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
             {showTranscript ? (
               hasTranscript ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{data.transcription}</ReactMarkdown></div> : <p className="text-slate-400 italic">No transcript data...</p>
-            ) : renderPlaceholder('transcript')}
+            ) : renderRevealButton('transcript')}
           </div>
         </div>
       </div>

@@ -1,5 +1,4 @@
 
-import { GoogleGenAI } from "@google/genai";
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
 const SYSTEM_INSTRUCTION = `You are an expert meeting secretary.
@@ -21,54 +20,28 @@ export const processMeetingAudio = async (
 
   const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
 
-  if (process.env.API_KEY) {
-      log("Initializing Gemini Client...");
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const base64Audio = await blobToBase64(audioBlob);
-
-      log("Sending audio to Gemini (Local Mode)...");
-      try {
-          const response = await ai.models.generateContent({
-              model: model,
-              contents: {
-                  parts: [
-                      { inlineData: { data: base64Audio, mimeType: mimeType } },
-                      { text: "Generate full transcript and structured notes. Return JSON." }
-                  ]
-              },
-              config: {
-                  systemInstruction: SYSTEM_INSTRUCTION,
-                  responseMimeType: "application/json"
-              }
-          });
-
-          log("AI analysis successful.");
-          return parseResponse(response.text || "{}", mode);
-      } catch (e: any) {
-          log(`Error: ${e.message}`);
-          throw e;
-      }
-  }
-
-  log("Starting multi-step upload process...");
+  log("Initializing production-ready processing pipeline...");
   try {
     const totalBytes = audioBlob.size;
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     
-    const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks
+    // Step 1: Divide into 4MB chunks
+    const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; 
     const totalChunks = Math.ceil(totalBytes / UPLOAD_CHUNK_SIZE);
     let offset = 0;
     let chunkIndex = 0;
 
-    log(`Total size: ${(totalBytes / (1024 * 1024)).toFixed(2)} MB`);
-    log(`Dividing into ${totalChunks} chunks for upload...`);
+    log(`Total Audio Size: ${(totalBytes / (1024 * 1024)).toFixed(2)} MB`);
+    log(`Slicing file into ${totalChunks} secure chunks...`);
 
     while (offset < totalBytes) {
         const chunkEnd = Math.min(offset + UPLOAD_CHUNK_SIZE, totalBytes);
         const chunkBlob = audioBlob.slice(offset, chunkEnd);
         const base64Data = await blobToBase64(chunkBlob);
 
+        const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
         log(`Uploading chunk ${chunkIndex + 1}/${totalChunks} to cloud storage...`);
+        log(`>> Progress: ${progress}% (${(chunkEnd / (1024 * 1024)).toFixed(2)} MB uploaded)`);
 
         const uploadResp = await fetch('/.netlify/functions/gemini', {
             method: 'POST',
@@ -76,23 +49,31 @@ export const processMeetingAudio = async (
             body: JSON.stringify({ action: 'upload_chunk', jobId, chunkIndex, data: base64Data })
         });
 
-        if (!uploadResp.ok) throw new Error(`Upload failed at chunk ${chunkIndex}`);
+        if (!uploadResp.ok) {
+            log(`ERROR: Chunk ${chunkIndex} upload failed.`);
+            throw new Error(`Upload failed at chunk ${chunkIndex}`);
+        }
         offset += UPLOAD_CHUNK_SIZE;
         chunkIndex++;
     }
     
-    log("Cloud upload complete. Triggering background AI worker...");
-    await fetch('/.netlify/functions/gemini-background', {
+    log("Cloud upload complete. Handshaking with Gemini Worker...");
+    const triggerResp = await fetch('/.netlify/functions/gemini-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId, totalChunks: chunkIndex, mimeType, mode: 'ALL', model, fileSize: totalBytes })
     });
 
-    log("Background worker started. Waiting for Gemini to process audio...");
+    if (!triggerResp.ok) {
+        log("ERROR: Failed to trigger background worker.");
+        throw new Error("Worker handshake failed.");
+    }
+
+    log("Background analysis started. Waiting for Gemini response...");
     let attempts = 0;
-    while (attempts < 300) {
+    while (attempts < 600) {
         attempts++;
-        if (attempts % 4 === 0) log(`Gemini is still working... (Step ${attempts})`);
+        if (attempts % 3 === 0) log(`Gemini is still processing... (Ping ${attempts})`);
         
         await new Promise(r => setTimeout(r, 3000));
         const pollResp = await fetch('/.netlify/functions/gemini', {
@@ -104,17 +85,18 @@ export const processMeetingAudio = async (
         if (pollResp.status === 200) {
             const data = await pollResp.json();
             if (data.status === 'COMPLETED') {
-                log("Processing complete! Fetching results...");
+                log("Processing SUCCESS! Building results...");
                 return parseResponse(data.result, mode);
             }
             if (data.status === 'ERROR') {
-                log(`Critical Failure: ${data.error}`);
+                log(`CRITICAL AI ERROR: ${data.error}`);
                 throw new Error(data.error);
             }
         }
     }
-    throw new Error("Job timed out.");
+    throw new Error("Timeout: Gemini is taking too long.");
   } catch (error) {
+    log(`FATAL: ${error instanceof Error ? error.message : 'Unknown error'}`);
     throw error;
   }
 };
@@ -144,12 +126,12 @@ function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     try {
         const rawData = JSON.parse(cleanText);
         return {
-            transcription: rawData.transcription || "",
-            summary: rawData.summary || "",
+            transcription: rawData.transcription || "No transcript returned.",
+            summary: rawData.summary || "No summary returned.",
             conclusions: rawData.conclusions || [],
             actionItems: rawData.actionItems || []
         };
     } catch (e) {
-        return { transcription: "", summary: "Error parsing result", conclusions: [], actionItems: [] };
+        return { transcription: "", summary: "Data corrupted. Try again.", conclusions: [], actionItems: [] };
     }
 }
