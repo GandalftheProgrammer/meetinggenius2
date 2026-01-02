@@ -40,7 +40,6 @@ export const startNewSession = async (title: string): Promise<string> => {
   };
   
   const tx = db.transaction([METADATA_STORE, STORE_NAME], 'readwrite');
-  // Clear old chunks from previous sessions to save space
   tx.objectStore(STORE_NAME).clear();
   tx.objectStore(METADATA_STORE).put(metadata);
   
@@ -54,7 +53,6 @@ export const saveChunk = async (chunk: Blob) => {
   const tx = db.transaction([STORE_NAME, METADATA_STORE], 'readwrite');
   tx.objectStore(STORE_NAME).add(chunk);
   
-  // Update last updated timestamp in metadata
   const metaStore = tx.objectStore(METADATA_STORE);
   const cursorRequest = metaStore.openCursor();
   cursorRequest.onsuccess = (e: any) => {
@@ -81,7 +79,17 @@ export const getActiveSession = async (): Promise<SessionMetadata | null> => {
 
 export const recoverAudio = async (): Promise<{blob: Blob, metadata: SessionMetadata} | null> => {
   const db = await openDB();
-  const metadata = await getActiveSession();
+  
+  // Haal de allerlaatste sessie op (onafhankelijk of deze nog 'actief' is)
+  const metadata = await new Promise<SessionMetadata | null>((resolve) => {
+    const tx = db.transaction(METADATA_STORE, 'readonly');
+    const request = tx.objectStore(METADATA_STORE).getAll();
+    request.onsuccess = () => {
+      const all = request.result;
+      resolve(all.length > 0 ? all[all.length - 1] : null);
+    };
+  });
+
   if (!metadata) return null;
 
   return new Promise((resolve) => {

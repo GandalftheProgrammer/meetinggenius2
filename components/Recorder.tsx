@@ -115,7 +115,6 @@ const Recorder: React.FC<RecorderProps> = ({
 
       mediaRecorder.ondataavailable = async (e) => {
         if (e.data.size > 0) {
-          // CRITICAL: Wegschrijven naar IndexedDB ipv RAM om crashes te voorkomen
           await saveChunk(e.data);
         }
       };
@@ -138,20 +137,32 @@ const Recorder: React.FC<RecorderProps> = ({
 
     } catch (error) {
       console.error(error);
-      alert("Microfoon toegang geweigerd.");
+      alert("Fout bij starten opname.");
     }
   };
 
   const stopRecording = useCallback(async () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+      const recorder = mediaRecorderRef.current;
+      
+      // Belangrijk: wacht op het 'onstop' event zodat de laatste chunk is opgeslagen
+      const stopPromise = new Promise(resolve => {
+          recorder.onstop = resolve;
+          recorder.stop();
+      });
+
+      await stopPromise;
       await markSessionComplete();
       
       if (silentAudioRef.current) silentAudioRef.current.pause();
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
 
       const recovered = await recoverAudio();
-      if (recovered) onRecordingFinished(recovered.blob);
+      if (recovered) {
+          onRecordingFinished(recovered.blob);
+      } else {
+          console.error("Geen audio kunnen herstellen uit database.");
+      }
 
       cleanupResources();
       setStream(null);
