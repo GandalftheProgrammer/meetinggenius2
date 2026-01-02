@@ -1,210 +1,148 @@
 
 import { GoogleUser } from '../types';
 
-// This relies on the Google Identity Services script loaded in index.html
 declare const google: any;
 
 let tokenClient: any;
 let accessToken: string | null = null;
+let isInitializing = false;
 
-// Initialize the Drive Client
-export const initDrive = (callback: (token: string) => void) => {
-  if (typeof google === 'undefined') {
-    console.error('Google Identity Services script not loaded');
-    return;
-  }
+const isTokenValid = () => {
+  const token = localStorage.getItem('drive_token');
+  const expiry = localStorage.getItem('drive_token_expiry');
+  return token && expiry && Date.now() < parseInt(expiry) - 60000;
+};
 
-  // Vite uses import.meta.env for environment variables
+export const initDrive = (callback: (token: string | null) => void): boolean => {
+  if (typeof google === 'undefined' || !google.accounts) return false;
+  if (tokenClient && isInitializing) return true;
+  isInitializing = true;
+
   const env = (import.meta as any).env;
   const clientId = env?.VITE_GOOGLE_CLIENT_ID || 'YOUR_CLIENT_ID_HERE';
 
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: clientId, 
-    scope: 'https://www.googleapis.com/auth/drive.file',
-    callback: (tokenResponse: any) => {
-      if (tokenResponse.error) {
-         console.warn("Drive connection error/interaction required:", tokenResponse.error);
-         return;
-      }
-
-      if (tokenResponse && tokenResponse.access_token) {
-        accessToken = tokenResponse.access_token;
-        // Store expiration time to manage session locally if needed
-        const expiresIn = tokenResponse.expires_in; 
-        const expiresAt = Date.now() + expiresIn * 1000;
-        localStorage.setItem('drive_token', accessToken);
-        localStorage.setItem('drive_token_expiry', expiresAt.toString());
-        // Mark as stickily connected so we try to reconnect next time
-        localStorage.setItem('drive_sticky_connection', 'true');
-        callback(accessToken);
-      }
-    },
-  });
-
-  // Check for existing valid token
-  const storedToken = localStorage.getItem('drive_token');
-  const expiry = localStorage.getItem('drive_token_expiry');
-  
-  if (storedToken && expiry && Date.now() < parseInt(expiry)) {
-    accessToken = storedToken;
-    callback(storedToken);
-  } else {
-    // No valid token found. Check if we should try to reconnect silently.
-    const isSticky = localStorage.getItem('drive_sticky_connection') === 'true';
-    if (isSticky) {
-        console.log("Attempting to restore persistent Drive connection...");
-        try {
-            // Attempt silent refresh. If this fails (interaction required), 
-            // the callback receives an error which we handle above.
-            tokenClient.requestAccessToken({ prompt: 'none' });
-        } catch (e) {
-            console.error("Silent refresh failed", e);
+  try {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId, 
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: (tokenResponse: any) => {
+        if (tokenResponse && tokenResponse.access_token) {
+          accessToken = tokenResponse.access_token;
+          localStorage.setItem('drive_token', accessToken!);
+          localStorage.setItem('drive_token_expiry', (Date.now() + tokenResponse.expires_in * 1000).toString());
+          localStorage.setItem('drive_sticky_connection', 'true');
+          callback(accessToken);
         }
+      },
+    });
+
+    if (isTokenValid()) {
+      accessToken = localStorage.getItem('drive_token');
+      callback(accessToken);
     }
+    return true;
+  } catch (err) {
+    return false;
+  } finally {
+    isInitializing = false;
   }
 };
 
 export const connectToDrive = () => {
-  if (!tokenClient) {
-    console.error("Drive client not initialized");
-    return;
-  }
+  if (!tokenClient) initDrive(() => {});
   tokenClient.requestAccessToken({ prompt: 'consent select_account' });
 };
 
 export const disconnectDrive = () => {
-  const tokenToRevoke = accessToken;
+  const token = accessToken || localStorage.getItem('drive_token');
   accessToken = null;
   localStorage.removeItem('drive_token');
   localStorage.removeItem('drive_token_expiry');
   localStorage.removeItem('drive_sticky_connection');
-  
-  if (typeof google !== 'undefined' && tokenToRevoke) {
-    google.accounts.oauth2.revoke(tokenToRevoke, () => { console.log('Token revoked') });
-  }
+  if (token) google.accounts.oauth2.revoke(token);
 };
 
-// --- FOLDER LOGIC ---
-
-const getFolderId = async (folderName: string, parentId?: string): Promise<string | null> => {
-  if (!accessToken) return null;
-
-  let query = `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
-  if (parentId) {
-    query += ` and '${parentId}' in parents`;
-  }
-
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  
-  const data = await response.json();
-  if (data.files && data.files.length > 0) {
-    return data.files[0].id;
-  }
-  return null;
-};
-
-const createFolder = async (folderName: string, parentId?: string): Promise<string> => {
-  const metadata: any = {
-    name: folderName,
-    mimeType: 'application/vnd.google-apps.folder',
-  };
-  if (parentId) {
-    metadata.parents = [parentId];
-  }
-
-  const response = await fetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(metadata),
-  });
-  const data = await response.json();
-  return data.id;
-};
-
-// Ensures the structure: MainFolder -> SubFolder exists
 const ensureFolderHierarchy = async (subFolder: string): Promise<string> => {
-    // 1. Get Main Folder
     const mainFolderName = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
     let mainId = await getFolderId(mainFolderName);
-    if (!mainId) {
-        mainId = await createFolder(mainFolderName);
-    }
+    if (!mainId) mainId = await createFolder(mainFolderName);
 
-    // 2. Get/Create Sub Folder
     let subId = await getFolderId(subFolder, mainId);
-    if (!subId) {
-        subId = await createFolder(subFolder, mainId);
-    }
+    if (!subId) subId = await createFolder(subFolder, mainId);
     
     return subId;
 };
 
-// --- SIMPLE MARKDOWN TO HTML CONVERTER ---
-const convertMarkdownToHtml = (markdown: string): string => {
-    let html = markdown
-        // Headers
-        .replace(/^# (.*$)/gm, '<h1 style="color:#1e293b; font-size:24px; margin-top:20px;">$1</h1>')
-        .replace(/^## (.*$)/gm, '<h2 style="color:#334155; font-size:18px; margin-top:16px;">$1</h2>')
-        .replace(/^### (.*$)/gm, '<h3 style="color:#475569; font-size:16px; margin-top:12px;">$1</h3>')
-        // Bold
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        // Action Items [ ] (Process BEFORE generic lists to avoid conflict)
-        .replace(/- \[ \] (.*$)/gm, '<li style="list-style-type: none;">☐ $1</li>')
-        // Lists
-        .replace(/^- (.*$)/gm, '<li>$1</li>')
-        // Paragraphs (double newline)
-        .replace(/\n\n/g, '<br><br>');
+const getFolderId = async (name: string, parentId?: string) => {
+  const token = accessToken || localStorage.getItem('drive_token');
+  let q = `mimeType='application/vnd.google-apps.folder' and name='${name}' and trashed=false`;
+  if (parentId) q += ` and '${parentId}' in parents`;
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const d = await r.json();
+  return d.files?.[0]?.id || null;
+};
 
-    // Wrap lists - Non-greedy match for consecutive list items
-    html = html.replace(/((?:<li.*?>.*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+const createFolder = async (name: string, parentId?: string) => {
+  const token = accessToken || localStorage.getItem('drive_token');
+  const meta: any = { name, mimeType: 'application/vnd.google-apps.folder' };
+  if (parentId) meta.parents = [parentId];
+  const r = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(meta)
+  });
+  const d = await r.json();
+  return d.id;
+};
+
+const convertMarkdownToHtml = (markdown: string, title: string): string => {
+    let html = markdown
+        .replace(/^# (.*$)/gm, '<h1 style="color:#1a73e8; font-family:Arial; font-size:24pt; margin-bottom:12pt; border-bottom:1px solid #eee; padding-bottom:8pt;">$1</h1>')
+        .replace(/^## (.*$)/gm, '<h2 style="color:#202124; font-family:Arial; font-size:16pt; margin-top:20pt; margin-bottom:8pt;">$1</h2>')
+        .replace(/^### (.*$)/gm, '<h3 style="color:#5f6368; font-family:Arial; font-size:13pt; margin-top:16pt;">$1</h3>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/- \[ \] (.*$)/gm, '<div style="margin-bottom:4pt;">☐ $1</div>')
+        .replace(/- \[x\] (.*$)/gm, '<div style="margin-bottom:4pt; text-decoration:line-through; color:#9aa0a6;">☑ $1</div>')
+        .replace(/^- (.*$)/gm, '<li style="margin-bottom:4pt;">$1</li>')
+        .replace(/\n\n/g, '<p style="margin-bottom:10pt;"></p>');
+
+    html = html.replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul style="padding-left:20pt; margin-bottom:12pt;">$1</ul>');
     
-    // Add basic styling container
     return `
-      <!DOCTYPE html>
       <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          ul { margin-bottom: 10px; padding-left: 20px; }
-          li { margin-bottom: 5px; }
-          h1, h2, h3 { color: #334155; }
-        </style>
-      </head>
-      <body>
+      <head><meta charset="utf-8"></head>
+      <body style="font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; color: #3c4043; padding: 1in;">
+        <div style="text-align: right; color: #9aa0a6; font-size: 9pt; margin-bottom: 20pt;">Gegenereerd door MeetingGenius op ${new Date().toLocaleString()}</div>
         ${html}
       </body>
       </html>
     `;
 };
 
-// --- UPLOAD LOGIC ---
-
-// Generic upload function for both Blob (Audio) and String (Text)
 const uploadFileToDrive = async (
     filename: string, 
     content: Blob | string, 
     mimeType: string, 
     folderName: string,
     convertToGoogleDoc: boolean = false
-): Promise<{id: string, webViewLink?: string}> => {
-  if (!accessToken) throw new Error("Not authenticated");
+) => {
+  const token = accessToken || localStorage.getItem('drive_token');
+  if (!token) throw new Error("Not authenticated");
 
   const folderId = await ensureFolderHierarchy(folderName);
+  
+  // Strip extensies voor een schone titel in Google Docs
+  const cleanTitle = filename.replace(/\.(md|html|txt)$/i, '');
 
   const metadata: any = {
-    name: filename,
+    name: cleanTitle,
     parents: [folderId],
   };
 
-  // If we are uploading text and want it to be a Google Doc
   if (convertToGoogleDoc) {
       metadata.mimeType = 'application/vnd.google-apps.document';
-  } else {
-      metadata.mimeType = mimeType;
   }
 
   const fileContent = typeof content === 'string' ? new Blob([content], { type: mimeType }) : content;
@@ -213,30 +151,22 @@ const uploadFileToDrive = async (
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', fileContent);
 
-  const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
 
-  if (!response.ok) throw new Error("Upload failed");
-  const data = await response.json();
-  return { id: data.id, webViewLink: data.webViewLink };
+  if (!r.ok) throw new Error("Drive upload mislukt");
+  return await r.json();
 };
 
-// Wrapper for Audio
-export const uploadAudioToDrive = async (filename: string, audioBlob: Blob): Promise<{id: string, webViewLink?: string}> => {
-    // Determine extension based on blob type if possible, otherwise default to .webm
-    const ext = audioBlob.type.includes('mp4') ? '.mp4' : '.webm';
-    const finalName = filename.endsWith(ext) ? filename : `${filename}${ext}`;
-    return uploadFileToDrive(finalName, audioBlob, audioBlob.type, 'Audio', false);
+export const uploadAudioToDrive = async (filename: string, audioBlob: Blob) => {
+    return uploadFileToDrive(filename, audioBlob, audioBlob.type, 'Audio', false);
 };
 
-// Wrapper for Text (Notes/Transcripts) -> Converted to Google Doc
-export const uploadTextToDrive = async (filename: string, content: string, subFolder: 'Notes' | 'Transcripts'): Promise<{id: string, webViewLink?: string}> => {
-    // 1. Convert Markdown to HTML so Google Drive parses formatting correctly
-    const htmlContent = convertMarkdownToHtml(content);
-    
-    // 2. Upload with conversion flag set to true
+export const uploadTextToDrive = async (filename: string, content: string, subFolder: 'Notes' | 'Transcripts') => {
+    const htmlContent = convertMarkdownToHtml(content, filename);
+    // Forceer ALTIJD conversie naar Google Doc voor tekstbestanden
     return uploadFileToDrive(filename, htmlContent, 'text/html', subFolder, true);
 };
