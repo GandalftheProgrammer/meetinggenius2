@@ -29,9 +29,7 @@ const Header: React.FC<HeaderProps> = ({
             Meeting<span className="text-blue-600">Genius</span>
           </h1>
         </div>
-        
         <div className="flex items-center gap-2 md:gap-3 overflow-x-auto max-w-full pb-1 md:pb-0">
-            {/* Removed 'hidden md:flex' to allow visibility on mobile */}
             <div className="flex relative group shrink-0">
                 <div className="flex items-center gap-2 text-xs md:text-sm font-medium text-slate-600 bg-slate-50 px-2 md:px-3 py-1.5 rounded-full border border-slate-200 hover:border-slate-300 transition-colors">
                     <span className="hidden xs:inline">Model:</span>
@@ -42,6 +40,7 @@ const Header: React.FC<HeaderProps> = ({
                         style={{ backgroundImage: 'none' }}
                     >
                         <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
+                        <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                         <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                         <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                         <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
@@ -51,7 +50,6 @@ const Header: React.FC<HeaderProps> = ({
                     <ChevronDown className="w-3 h-3 absolute right-2 md:right-3 pointer-events-none text-slate-400" />
                 </div>
             </div>
-
             <button 
                 onClick={isDriveConnected ? onDisconnectDrive : onConnectDrive}
                 className={`group flex items-center gap-2 px-3 py-1.5 rounded-full text-xs md:text-sm font-medium border transition-all shadow-sm shrink-0 ${
@@ -59,7 +57,7 @@ const Header: React.FC<HeaderProps> = ({
                     ? 'bg-green-50 border-green-200 text-green-700 hover:bg-red-50 hover:border-red-200 hover:text-red-600 cursor-pointer' 
                     : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
                 }`}
-                title={isDriveConnected ? "Click to Disconnect" : "Connect to Google Drive to save notes automatically"}
+                title={isDriveConnected ? "Click to disconnect" : "Connect to Google Drive for auto-saving"}
             >
                 {isDriveConnected ? (
                     <>
