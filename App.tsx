@@ -10,7 +10,7 @@ import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disco
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-3-pro-preview');
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash-lite');
   
   // Data State
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
@@ -121,35 +121,16 @@ const App: React.FC = () => {
       return now.toLocaleString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const saveAudioBackup = async (blob: Blob, currentTitle: string) => {
-    if (!isDriveConnected) return;
+  const saveAudioBackup = async () => {
+    if (!combinedBlob || !isDriveConnected) return;
+    const currentTitle = title.trim() || `Meeting ${getFormattedDateTime()}`;
     const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
     try {
         addLog("Audio back-up starten...");
-        const result = await uploadAudioToDrive(safeTitle, blob);
+        const result = await uploadAudioToDrive(safeTitle, combinedBlob);
         if (result.webViewLink) addLog(`Audio bewaard: ${result.webViewLink}`);
     } catch (err) {
         addLog("Waarschuwing: Audio back-up mislukt.");
-    }
-  };
-
-  const saveResultsToDrive = async (data: MeetingData, currentTitle: string) => {
-    if (!isDriveConnected) return;
-    const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
-    try {
-        addLog("Resultaten converteren naar Google Docs...");
-        if (data.summary) {
-            const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions & Insights\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
-            const result = await uploadTextToDrive(`${safeTitle}_notes`, notesContent, 'Notes');
-            if (result.webViewLink) addLog(`Notes (Doc) opgeslagen: ${result.webViewLink}`);
-        }
-        if (data.transcription) {
-            const transcriptContent = `# Transcription: ${currentTitle}\n\n${data.transcription}`;
-            const result = await uploadTextToDrive(`${safeTitle}_transcript`, transcriptContent, 'Transcripts');
-            if (result.webViewLink) addLog(`Transcript (Doc) opgeslagen: ${result.webViewLink}`);
-        }
-    } catch (err) {
-        addLog("Google Drive upload fout.");
     }
   };
 
@@ -167,7 +148,7 @@ const App: React.FC = () => {
       setIsGeneratingMissing(true);
     } else {
       setAppState(AppState.PROCESSING);
-      if (!isUploadedFile) saveAudioBackup(combinedBlob, currentTitle);
+      if (!isUploadedFile) saveAudioBackup();
     }
     
     try {
@@ -184,7 +165,6 @@ const App: React.FC = () => {
       
       setMeetingData(updatedData);
       setAppState(AppState.COMPLETED);
-      await saveResultsToDrive(updatedData, currentTitle);
     } catch (apiError) {
       addLog(`Fout: ${apiError instanceof Error ? apiError.message : 'Onbekend'}`);
       setError("Verwerking mislukt. Bekijk de logs.");
@@ -245,6 +225,7 @@ const App: React.FC = () => {
               onDiscard={handleDiscard}
               onRecordingChange={handleRecordingChange}
               onFileUpload={handleFileUpload}
+              onSaveAudio={isDriveConnected ? saveAudioBackup : undefined}
               audioUrl={audioUrl}
               debugLogs={debugLogs}
             />
@@ -258,6 +239,9 @@ const App: React.FC = () => {
             onReset={handleDiscard}
             onGenerateMissing={handleProcessAudio}
             isProcessingMissing={isGeneratingMissing} 
+            isDriveConnected={isDriveConnected}
+            onConnectDrive={handleConnectDrive}
+            onSaveAudio={isDriveConnected ? saveAudioBackup : undefined}
           />
         )}
       </main>
