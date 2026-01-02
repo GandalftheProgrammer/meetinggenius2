@@ -5,6 +5,8 @@ declare const google: any;
 
 let tokenClient: any;
 let accessToken: string | null = null;
+let mainFolderId: string | null = null;
+let folderLock: Promise<string> | null = null;
 
 export const initDrive = (callback: (token: string | null) => void) => {
   if (typeof google === 'undefined') return;
@@ -44,6 +46,7 @@ export const connectToDrive = () => {
 export const disconnectDrive = () => {
   const t = accessToken;
   accessToken = null;
+  mainFolderId = null;
   localStorage.removeItem('drive_token');
   localStorage.removeItem('drive_token_expiry');
   localStorage.removeItem('drive_sticky_connection');
@@ -73,10 +76,25 @@ const createFolder = async (name: string, parentId?: string): Promise<string> =>
   return d.id;
 };
 
+// Robust folder ensures with a lock to prevent duplicate creation
 const ensureFolder = async (sub: string): Promise<string> => {
     const main = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
-    let mId = await getFolderId(main) || await createFolder(main);
-    return await getFolderId(sub, mId) || await createFolder(sub, mId);
+    
+    // Lock logic to prevent multiple rapid requests from creating duplicate main folders
+    if (!mainFolderId) {
+        if (!folderLock) {
+            folderLock = (async () => {
+                const id = await getFolderId(main) || await createFolder(main);
+                mainFolderId = id;
+                return id;
+            })();
+        }
+        await folderLock;
+    }
+
+    if (!mainFolderId) throw new Error("Could not ensure folder");
+    
+    return await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
 };
 
 const convertMarkdownToHtml = (md: string): string => {
@@ -129,7 +147,6 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
 
   const metadataPart = JSON.stringify(meta);
   
-  // Use a Blob to construct the multipart body efficiently (especially for large audio files)
   const bodyParts: (string | Blob | ArrayBuffer)[] = [
     delimiter,
     'Content-Type: application/json; charset=UTF-8\r\n\r\n',

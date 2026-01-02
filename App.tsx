@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Recorder from './components/Recorder';
@@ -116,23 +117,28 @@ const App: React.FC = () => {
     if (!isDriveConnected) return;
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
     
-    // Separate try-catch blocks for each file to ensure they don't block each other
-    
+    // Create an array of sync promises to run in parallel
+    const syncTasks: Promise<void>[] = [];
+
     // 1. Audio
     if (blob) {
-      try {
-        addLog("Syncing audio...");
-        await uploadAudioToDrive(safeTitle, blob);
-        addLog("Audio saved to Drive ✅");
-      } catch (e) {
-        addLog("Audio sync failed.");
-      }
+      syncTasks.push((async () => {
+        try {
+          addLog("Syncing audio...");
+          await uploadAudioToDrive(safeTitle, blob);
+          addLog("Audio saved to Drive ✅");
+        } catch (e) {
+          addLog("Audio sync failed.");
+          console.error(e);
+        }
+      })());
     }
 
     // 2. Notes
     if (data.summary && data.summary.length > 0) {
-      try {
-        const notesMarkdown = `
+      syncTasks.push((async () => {
+        try {
+          const notesMarkdown = `
 # Meeting Notes: ${currentTitle}
 ## Summary
 ${data.summary}
@@ -140,25 +146,33 @@ ${data.summary}
 ${data.conclusions.map(d => `- ${d}`).join('\n')}
 ## Action Items
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
-        `.trim();
-        addLog("Syncing notes...");
-        await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
-        addLog("Notes saved to Drive ✅");
-      } catch (e) {
-        addLog("Notes sync failed.");
-      }
+          `.trim();
+          addLog("Syncing notes...");
+          await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
+          addLog("Notes saved to Drive ✅");
+        } catch (e) {
+          addLog("Notes sync failed.");
+          console.error(e);
+        }
+      })());
     }
 
     // 3. Transcript
     if (data.transcription && data.transcription.length > 0) {
-      try {
-        addLog("Syncing transcript...");
-        await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
-        addLog("Transcript saved to Drive ✅");
-      } catch (e) {
-        addLog("Transcript sync failed.");
-      }
+      syncTasks.push((async () => {
+        try {
+          addLog("Syncing transcript...");
+          await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
+          addLog("Transcript saved to Drive ✅");
+        } catch (e) {
+          addLog("Transcript sync failed.");
+          console.error(e);
+        }
+      })());
     }
+
+    // Run all tasks in parallel
+    await Promise.allSettled(syncTasks);
   };
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
