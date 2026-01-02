@@ -48,6 +48,7 @@ const Recorder: React.FC<RecorderProps> = ({
   const audioContextRef = useRef<AudioContext | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingWritesRef = useRef<number>(0);
 
   useEffect(() => {
     if (!navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent)) {
@@ -68,6 +69,14 @@ const Recorder: React.FC<RecorderProps> = ({
     };
   }, []);
 
+  const getSupportedMimeType = () => {
+    const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/wav'];
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return 'audio/webm'; // fallback
+  };
+
   const cleanupResources = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (backupTimerRef.current) clearInterval(backupTimerRef.current);
@@ -83,14 +92,6 @@ const Recorder: React.FC<RecorderProps> = ({
       
       if (silentAudioRef.current) {
           silentAudioRef.current.play().catch(console.warn);
-          if ('mediaSession' in navigator) {
-            navigator.mediaSession.metadata = new MediaMetadata({ 
-              title: 'Meeting Opname Actief...',
-              artist: 'MeetingGenius',
-              album: meetingTitle || 'Meeting'
-            });
-            navigator.mediaSession.playbackState = 'playing';
-          }
       }
 
       let finalStream: MediaStream;
@@ -110,16 +111,23 @@ const Recorder: React.FC<RecorderProps> = ({
       }
       
       setStream(finalStream);
-      const mediaRecorder = new MediaRecorder(finalStream, { mimeType: 'audio/webm', audioBitsPerSecond: 64000 });
+      
+      const mimeType = getSupportedMimeType();
+      const mediaRecorder = new MediaRecorder(finalStream, { mimeType, audioBitsPerSecond: 128000 });
       mediaRecorderRef.current = mediaRecorder;
 
       mediaRecorder.ondataavailable = async (e) => {
         if (e.data.size > 0) {
-          await saveChunk(e.data);
+          pendingWritesRef.current++;
+          try {
+            await saveChunk(e.data);
+          } finally {
+            pendingWritesRef.current--;
+          }
         }
       };
 
-      mediaRecorder.start(5000); 
+      mediaRecorder.start(3000); // Kortere chunks (3s) voor betere stabiliteit
       setIsRecording(true);
       onRecordingChange(true);
       
@@ -136,8 +144,8 @@ const Recorder: React.FC<RecorderProps> = ({
       }, 120000);
 
     } catch (error) {
-      console.error(error);
-      alert("Fout bij starten opname.");
+      console.error("Recording error:", error);
+      alert("Kon de opname niet starten. Controleer je microfoon-rechten.");
     }
   };
 
@@ -145,23 +153,29 @@ const Recorder: React.FC<RecorderProps> = ({
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       const recorder = mediaRecorderRef.current;
       
-      // Belangrijk: wacht op het 'onstop' event zodat de laatste chunk is opgeslagen
       const stopPromise = new Promise(resolve => {
           recorder.onstop = resolve;
           recorder.stop();
       });
 
       await stopPromise;
+
+      // WACOHT op alle lopende IndexedDB schrijfacties
+      let waitAttempts = 0;
+      while (pendingWritesRef.current > 0 && waitAttempts < 50) {
+          await new Promise(r => setTimeout(r, 100));
+          waitAttempts++;
+      }
+
       await markSessionComplete();
       
       if (silentAudioRef.current) silentAudioRef.current.pause();
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
 
       const recovered = await recoverAudio();
-      if (recovered) {
+      if (recovered && recovered.blob.size > 1000) {
           onRecordingFinished(recovered.blob);
       } else {
-          console.error("Geen audio kunnen herstellen uit database.");
+          alert("De opname is mislukt of te kort. Probeer het opnieuw.");
       }
 
       cleanupResources();
@@ -205,7 +219,7 @@ const Recorder: React.FC<RecorderProps> = ({
         <AudioVisualizer stream={stream} isRecording={isRecording} />
         {isRecording && (
             <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 bg-green-500/10 text-green-600 text-[10px] font-bold rounded-full border border-green-500/20 animate-pulse">
-                <ShieldCheck className="w-3 h-3" /> CRASH PROTECTION ACTIVE
+                <ShieldCheck className="w-3 h-3" /> BEVEILIGING ACTIEF
             </div>
         )}
       </div>
@@ -213,12 +227,6 @@ const Recorder: React.FC<RecorderProps> = ({
       <div className={`text-5xl font-mono font-semibold mb-2 ${isRecording ? 'text-red-500' : 'text-slate-700'}`}>
         {formatTime(recordingTime)}
       </div>
-
-      {isRecording && lastAutoBackup > 0 && (
-          <div className="text-[10px] text-slate-400 mb-6 flex items-center gap-1">
-              <CloudUpload className="w-3 h-3"/> Laatste backup: {new Date(lastAutoBackup).toLocaleTimeString()}
-          </div>
-      )}
 
       <div className="flex flex-col items-center justify-center w-full mb-6 gap-4">
         <button onClick={toggleRecording} className={`w-20 h-20 rounded-full shadow-md flex items-center justify-center transition-all ${isRecording ? 'bg-slate-900 hover:bg-slate-800' : 'bg-red-500 hover:bg-red-600'}`}>
@@ -235,7 +243,7 @@ const Recorder: React.FC<RecorderProps> = ({
 
       {!isRecording && audioUrl && (
         <div className="w-full border-t border-slate-100 pt-6 animate-in slide-in-from-top-4">
-          <audio controls src={audioUrl} className="w-full h-10 mb-6" />
+          <audio controls src={audioUrl} className="w-full h-10 mb-6 shadow-sm rounded-lg" />
           <div className="grid grid-cols-2 gap-3 mb-3">
             <button onClick={() => onProcessAudio('NOTES_ONLY')} className="p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl text-blue-700 font-semibold text-sm flex flex-col items-center"><ListChecks className="mb-1"/>Samenvatten</button>
             <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl text-purple-700 font-semibold text-sm flex flex-col items-center"><FileText className="mb-1"/>Transcript</button>
@@ -243,10 +251,10 @@ const Recorder: React.FC<RecorderProps> = ({
           {onSaveAudio && (
               <button onClick={handleManualSave} disabled={isSaving || isSaved} className={`w-full py-2 px-4 rounded-lg text-sm font-medium flex items-center justify-center gap-2 border ${isSaved ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white text-slate-700 hover:bg-slate-50'}`}>
                  {isSaving ? <Loader2 className="animate-spin w-4 h-4"/> : isSaved ? <CheckCircle className="w-4 h-4"/> : <FileAudio className="w-4 h-4"/>}
-                 {isSaved ? "Opgeslagen in Drive!" : "Handmatig naar Drive"}
+                 {isSaved ? "In Drive!" : "Save naar Drive"}
               </button>
           )}
-          <button onClick={onDiscard} className="w-full mt-3 py-2 text-sm text-red-500 font-medium flex items-center justify-center gap-2 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /> Verwijderen</button>
+          <button onClick={onDiscard} className="w-full mt-3 py-2 text-sm text-red-500 font-medium flex items-center justify-center gap-2 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /> Weggooien</button>
         </div>
       )}
     </div>
