@@ -31,8 +31,11 @@ const Results: React.FC<ResultsProps> = ({
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
 
+  // Final check to remove any brackets from title for file names
+  const cleanTitle = title.replace(/[()]/g, '').trim();
+
   const notesMarkdown = `
-# Meeting Notes: ${title}
+# Meeting Notes: ${cleanTitle}
 
 ## Summary
 ${data.summary}
@@ -44,15 +47,17 @@ ${data.conclusions.map(d => `- ${d}`).join('\n')}
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   `.trim();
 
-  const transcriptMarkdown = `# Transcript: ${title}\n\n${data.transcription}`;
+  const transcriptMarkdown = `# Transcript: ${cleanTitle}\n\n${data.transcription}`;
 
   const downloadBlob = (blob: Blob, suffix: string) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     const extension = blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm';
-    // Updated filename format to follow requested "[title] on [date] at [time] - [type]"
-    const fileName = `${title} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
+    
+    // Strict format: [title] on [date] at [time] - [suffix]
+    const fileName = `${cleanTitle} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
+    
     link.download = `${fileName}.${extension}`;
     document.body.appendChild(link);
     link.click();
@@ -75,8 +80,10 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    // Updated filename format to follow requested "[title] on [date] at [time] - [type]"
-    const fileName = `${title} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
+    
+    // Strict format: [title] on [date] at [time] - [suffix]
+    const fileName = `${cleanTitle} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
+    
     link.download = `${fileName}.doc`;
     link.click();
   };
@@ -108,7 +115,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2">
            {audioBlob && <button onClick={() => downloadBlob(audioBlob, 'audio')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><FileAudio className="w-4 h-4" />Audio</button>}
            {hasNotes && <button onClick={() => downloadAsDoc(notesMarkdown, 'notes')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Notes</button>}
-           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcription')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
+           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcript')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
         </div>
       </div>
 

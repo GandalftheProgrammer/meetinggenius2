@@ -38,7 +38,7 @@ const App: React.FC = () => {
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     
-    // Updated to use "at" as requested
+    // Return format: "12 February 2026 at 18h02m"
     return `${day} ${month} ${year} at ${hours}h${minutes}m`;
   };
 
@@ -99,6 +99,7 @@ const App: React.FC = () => {
       setSessionStartTime(new Date(file.lastModified));
       addLog(`File received: ${file.name}`);
       if (!title) {
+          // Remove extension and any existing path characters
           setTitle(file.name.replace(/\.[^/.]+$/, ""));
       }
   };
@@ -119,8 +120,12 @@ const App: React.FC = () => {
     
     const startTime = sessionStartTime || new Date();
     const dateString = formatMeetingDateTime(startTime);
-    // Updated to follow "[title] on [date] at [time]"
-    const safeBaseName = `${currentTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
+    
+    // Final check to remove any brackets from title if they snuck in
+    const cleanTitle = currentTitle.replace(/[()]/g, '').trim();
+    
+    // Format: [title] on [date] at [time]
+    const safeBaseName = `${cleanTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
 
     addLog(`Cloud Storage: Syncing...`);
 
@@ -133,7 +138,7 @@ const App: React.FC = () => {
     // 2. Notes
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      let notesMarkdown = `# Notes: ${currentTitle}\n`;
+      let notesMarkdown = `# Notes: ${cleanTitle}\n`;
       notesMarkdown += `*Recorded on ${dateString}*\n\n`;
       notesMarkdown += `${data.summary}\n\n`;
       
@@ -150,8 +155,8 @@ const App: React.FC = () => {
 
     // 3. Transcript
     if (data.transcription) {
-      const transcriptName = `${safeBaseName} - transcription`;
-      let transcriptMarkdown = `# Transcript: ${currentTitle}\n`;
+      const transcriptName = `${safeBaseName} - transcript`;
+      let transcriptMarkdown = `# Transcript: ${cleanTitle}\n`;
       transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription}`;
       uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
     }
