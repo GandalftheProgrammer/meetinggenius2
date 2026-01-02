@@ -1,41 +1,59 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Recorder from './components/Recorder';
 import Results from './components/Results';
 import { AppState, MeetingData, ProcessingMode, GeminiModel } from './types';
 import { processMeetingAudio } from './services/geminiService';
 import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disconnectDrive } from './services/driveService';
-import { clearSession } from './services/storageService';
-import { AlertCircle, Loader2, Calendar } from 'lucide-react';
 
 const App: React.FC = () => {
-  const generateDefaultTitle = () => {
-    const now = new Date();
-    const dateStr = now.toLocaleDateString('nl-NL', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const timeStr = now.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
-    return `Meeting - ${dateStr} ${timeStr}`;
-  };
-
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
-  const [title, setTitle] = useState<string>(generateDefaultTitle());
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash');
+  const [title, setTitle] = useState<string>("");
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-3-pro-preview');
   
+  // Data State
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  
+  // Audio State
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [combinedBlob, setCombinedBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  
+  // Processing State
+  const [isGeneratingMissing, setIsGeneratingMissing] = useState(false);
+  
+  // Upload State
+  const [isUploadedFile, setIsUploadedFile] = useState(false);
+  
+  // Date State for Timestamping
+  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
+  const [uploadedFileDate, setUploadedFileDate] = useState<Date | null>(null);
+  
+  // Drive State
   const [isDriveConnected, setIsDriveConnected] = useState(false);
+  
+  // Logs
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
-  const addLog = useCallback((msg: string) => {
+  const addLog = (msg: string) => {
     setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString().split(' ')[0]} ${msg}`]);
-  }, []);
+  };
 
+  // Initialize Drive on mount with better state handling
   useEffect(() => {
-    initDrive((token) => {
-        setIsDriveConnected(!!token);
-    });
+    const timer = setTimeout(() => {
+      initDrive((token) => {
+          if (token) {
+              setIsDriveConnected(true);
+              addLog("Google Drive: Sessie hersteld");
+          } else {
+              setIsDriveConnected(false);
+          }
+      });
+    }, 500); // Small delay to ensure Google script is ready
+    return () => clearTimeout(timer);
   }, []);
 
   const handleConnectDrive = () => {
@@ -43,7 +61,7 @@ const App: React.FC = () => {
       if (storedName) {
           connectToDrive();
       } else {
-          const folderName = prompt("Drive mapnaam voor backups:", "MeetingGenius");
+          const folderName = prompt("Kies een Google Drive mapnaam voor je data:", "MeetingGenius");
           if (folderName) {
               localStorage.setItem('drive_folder_name', folderName);
               connectToDrive();
@@ -51,125 +69,201 @@ const App: React.FC = () => {
       }
   };
 
-  const handleRecordingFinished = (blob: Blob) => {
-      if (!blob || blob.size < 100) {
-          setError("De opname is mislukt of bevat geen data. Probeer het opnieuw.");
-          return;
-      }
+  const handleDisconnectDrive = () => {
+    disconnectDrive();
+    setIsDriveConnected(false);
+    addLog("Google Drive: Verbinding verbroken");
+  };
+
+  useEffect(() => {
+    if (audioChunks.length > 0) {
+      const mimeType = audioChunks[0].type || 'audio/webm';
+      const blob = new Blob(audioChunks, { type: mimeType });
       setCombinedBlob(blob);
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-      setAudioUrl(URL.createObjectURL(blob));
-      setAppState(AppState.PAUSED);
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
+      return () => URL.revokeObjectURL(url);
+    }
+  }, [audioChunks]);
+
+  const handleChunkReady = (chunk: Blob) => {
+    setAudioChunks(prev => [...prev, chunk]);
   };
 
   const handleFileUpload = (file: File) => {
-      handleRecordingFinished(file);
-      setTitle(file.name.replace(/\.[^/.]+$/, ""));
+      setAudioChunks([]); 
+      setCombinedBlob(file);
+      const url = URL.createObjectURL(file);
+      setAudioUrl(url);
+      setIsUploadedFile(true);
+      setUploadedFileDate(new Date(file.lastModified));
+      setAppState(AppState.PAUSED);
+      addLog(`Bestand geüpload: ${file.name}`);
+      if (!title) {
+          setTitle(file.name.replace(/\.[^/.]+$/, ""));
+      }
   };
 
-  const handleManualAudioSave = async () => {
-      if (!combinedBlob) return;
-      try {
-          await uploadAudioToDrive(title || "Ongetiteld", combinedBlob);
-          addLog("Audio opgeslagen in Drive");
-      } catch (err) {
-          addLog("Opslaan audio mislukt");
-      }
+  const handleRecordingChange = (isRecording: boolean) => {
+    if (isRecording) {
+      setRecordingStartTime(new Date());
+      setIsUploadedFile(false);
+      setAppState(AppState.RECORDING);
+    } else {
+       if (appState === AppState.RECORDING) {
+         setAppState(AppState.PAUSED);
+       }
+    }
+  };
+
+  const getFormattedDateTime = (dateInput?: Date) => {
+      const now = dateInput || new Date();
+      return now.toLocaleString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const saveAudioBackup = async (blob: Blob, currentTitle: string) => {
+    if (!isDriveConnected) return;
+    const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
+    try {
+        addLog("Audio back-up starten...");
+        const result = await uploadAudioToDrive(safeTitle, blob);
+        if (result.webViewLink) addLog(`Audio bewaard: ${result.webViewLink}`);
+    } catch (err) {
+        addLog("Waarschuwing: Audio back-up mislukt.");
+    }
+  };
+
+  const saveResultsToDrive = async (data: MeetingData, currentTitle: string) => {
+    if (!isDriveConnected) return;
+    const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
+    try {
+        addLog("Resultaten converteren naar Google Docs...");
+        if (data.summary) {
+            const notesContent = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions & Insights\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(i => `- [ ] ${i}`).join('\n')}`;
+            const result = await uploadTextToDrive(`${safeTitle}_notes`, notesContent, 'Notes');
+            if (result.webViewLink) addLog(`Notes (Doc) opgeslagen: ${result.webViewLink}`);
+        }
+        if (data.transcription) {
+            const transcriptContent = `# Transcription: ${currentTitle}\n\n${data.transcription}`;
+            const result = await uploadTextToDrive(`${safeTitle}_transcript`, transcriptContent, 'Transcripts');
+            if (result.webViewLink) addLog(`Transcript (Doc) opgeslagen: ${result.webViewLink}`);
+        }
+    } catch (err) {
+        addLog("Google Drive upload fout.");
+    }
   };
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
-    setError(null);
-    if (!combinedBlob) {
-        setError("Geen audio gevonden om te verwerken.");
-        return;
+    if (!combinedBlob) return;
+    let baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
+    const timestamp = getFormattedDateTime(baseDate);
+    let currentTitle = title.trim() || `Meeting ${timestamp}`;
+    if (title.trim() && !currentTitle.includes(timestamp)) {
+        currentTitle = `${currentTitle} - ${timestamp}`;
+    }
+    setTitle(currentTitle);
+
+    if (appState === AppState.COMPLETED) {
+      setIsGeneratingMissing(true);
+    } else {
+      setAppState(AppState.PROCESSING);
+      if (!isUploadedFile) saveAudioBackup(combinedBlob, currentTitle);
     }
     
-    const currentTitle = title.trim() || generateDefaultTitle();
-    setTitle(currentTitle);
-    
-    setAppState(AppState.PROCESSING);
     try {
-      const newData = await processMeetingAudio(combinedBlob, combinedBlob.type, mode, selectedModel, addLog);
-      setMeetingData(newData);
-      setAppState(AppState.COMPLETED);
+      addLog(`AI Model: ${selectedModel}`);
+      const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', mode, selectedModel, addLog);
       
-      if (isDriveConnected && newData.summary) {
-          await uploadTextToDrive(`${currentTitle}_samenvatting`, newData.summary, 'Notes');
-      }
-    } catch (apiError: any) {
-      setError(apiError.message || "Er is iets misgegaan tijdens de verwerking.");
+      const updatedData = meetingData ? {
+          ...meetingData,
+          transcription: newData.transcription || meetingData.transcription,
+          summary: newData.summary || meetingData.summary,
+          conclusions: newData.conclusions.length > 0 ? newData.conclusions : meetingData.conclusions,
+          actionItems: newData.actionItems.length > 0 ? newData.actionItems : meetingData.actionItems
+      } : newData;
+      
+      setMeetingData(updatedData);
+      setAppState(AppState.COMPLETED);
+      await saveResultsToDrive(updatedData, currentTitle);
+    } catch (apiError) {
+      addLog(`Fout: ${apiError instanceof Error ? apiError.message : 'Onbekend'}`);
+      setError("Verwerking mislukt. Bekijk de logs.");
       setAppState(AppState.PAUSED); 
+    } finally {
+      setIsGeneratingMissing(false);
     }
   };
 
-  const handleDiscard = async () => {
-    await clearSession();
+  const handleDiscard = () => {
     setAppState(AppState.IDLE);
+    setAudioChunks([]);
     setCombinedBlob(null);
-    if (audioUrl) URL.revokeObjectURL(audioUrl);
     setAudioUrl(null);
     setMeetingData(null);
-    setTitle(generateDefaultTitle());
+    setDebugLogs([]);
+    setTitle("");
     setError(null);
+    setIsUploadedFile(false);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Header isDriveConnected={isDriveConnected} onConnectDrive={handleConnectDrive} onDisconnectDrive={disconnectDrive} selectedModel={selectedModel} onModelChange={setSelectedModel} />
+      <Header 
+        isDriveConnected={isDriveConnected} 
+        onConnectDrive={handleConnectDrive} 
+        onDisconnectDrive={handleDisconnectDrive}
+        selectedModel={selectedModel}
+        onModelChange={setSelectedModel}
+      />
 
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 py-8">
-        
+      <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-12">
         {error && (
-            <div className="max-w-lg mx-auto mb-6 bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3 animate-in fade-in zoom-in duration-300">
-                <AlertCircle className="w-5 h-5 shrink-0" />
-                <p className="text-sm font-medium">{error}</p>
-                <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600 font-bold">×</button>
-            </div>
+          <div className="max-w-md mx-auto mb-8 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-center text-sm">
+            {error}
+          </div>
         )}
 
-        {appState === AppState.PROCESSING ? (
-            <div className="flex flex-col items-center justify-center py-20 space-y-6">
-                <div className="relative">
-                    <div className="w-24 h-24 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin"></div>
-                    <Loader2 className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 text-blue-600 animate-pulse" />
-                </div>
-                <div className="text-center space-y-2">
-                    <h2 className="text-xl font-bold text-slate-800">AI analyseert de meeting...</h2>
-                    <p className="text-slate-500 max-w-xs mx-auto text-sm">Dit duurt ongeveer 30-60 seconden.</p>
-                </div>
-            </div>
-        ) : appState !== AppState.COMPLETED ? (
-          <div className="flex flex-col items-center space-y-8">
+        {appState !== AppState.COMPLETED && (
+          <div className="flex flex-col items-center space-y-8 animate-in fade-in duration-500">
             <div className="w-full max-w-lg space-y-2">
-              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1 flex items-center gap-2">
-                <Calendar className="w-3.5 h-3.5" /> Meeting Titel
-              </label>
-              <input 
-                type="text" 
-                value={title} 
-                onChange={(e) => setTitle(e.target.value)} 
-                className="w-full px-5 py-4 rounded-2xl border border-slate-200 shadow-sm focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all bg-white text-lg font-medium text-slate-800" 
+              <label htmlFor="title" className="block text-sm font-medium text-slate-700 ml-1">Titel van de meeting</label>
+              <input
+                type="text"
+                id="title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Bijv. Project Kickoff"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                disabled={appState === AppState.PROCESSING || appState === AppState.RECORDING}
               />
             </div>
 
             <Recorder 
-              appState={appState} 
-              onProcessAudio={handleProcessAudio} 
-              onDiscard={handleDiscard} 
-              onRecordingChange={(isRec) => setAppState(isRec ? AppState.RECORDING : AppState.PAUSED)} 
-              onSaveAudio={handleManualAudioSave} 
-              onFileUpload={handleFileUpload} 
-              audioUrl={audioUrl} 
+              appState={appState}
+              onChunkReady={handleChunkReady}
+              onProcessAudio={handleProcessAudio}
+              onDiscard={handleDiscard}
+              onRecordingChange={handleRecordingChange}
+              onFileUpload={handleFileUpload}
+              audioUrl={audioUrl}
               debugLogs={debugLogs}
-              meetingTitle={title}
-              onRecordingFinished={handleRecordingFinished}
             />
           </div>
-        ) : meetingData && (
-          <Results data={meetingData} title={title} onReset={handleDiscard} onGenerateMissing={handleProcessAudio} isProcessingMissing={false} onSaveAudio={handleManualAudioSave} />
+        )}
+
+        {appState === AppState.COMPLETED && meetingData && (
+          <Results 
+            data={meetingData} 
+            title={title} 
+            onReset={handleDiscard}
+            onGenerateMissing={handleProcessAudio}
+            isProcessingMissing={isGeneratingMissing} 
+          />
         )}
       </main>
-      <footer className="py-6 text-center text-slate-400 text-xs font-medium">MeetingGenius AI Assistant &bull; {new Date().getFullYear()}</footer>
+      <footer className="py-6 text-center text-slate-400 text-sm">
+        &copy; {new Date().getFullYear()} MeetingGenius.
+      </footer>
     </div>
   );
 };
