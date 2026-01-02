@@ -116,10 +116,7 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   if (!accessToken) throw new Error("No token");
   const fId = await ensureFolder(sub);
   
-  // Clean filename for Google Docs conversion (remove extensions so titles look clean in Drive)
   const cleanName = toDoc ? name.replace(/\.(md|html|txt)$/i, '').replace(/_/g, ' ') : name;
-  
-  // CRITICAL: We set the target mimeType in the metadata to trigger Google's auto-conversion to a native Google Doc
   const meta = { 
     name: cleanName, 
     parents: [fId], 
@@ -127,45 +124,39 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   };
   
   const boundary = '-------314159265358979323846';
-  const blob = typeof content === 'string' ? new Blob([content], { type }) : content;
-  
-  return new Promise((res, rej) => {
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const b64 = btoa(new Uint8Array(reader.result as ArrayBuffer).reduce((d, b) => d + String.fromCharCode(b), ''));
-      
-      const body = 
-        `--${boundary}\r\n` +
-        `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-        `${JSON.stringify(meta)}\r\n` +
-        `--${boundary}\r\n` +
-        `Content-Type: ${type}\r\n` +
-        `Content-Transfer-Encoding: base64\r\n\r\n` +
-        `${b64}\r\n` +
-        `--${boundary}--`;
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
 
-      try {
-        const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
-          method: 'POST',
-          headers: { 
-            Authorization: `Bearer ${accessToken}`, 
-            'Content-Type': `multipart/related; boundary=${boundary}` 
-          },
-          body
-        });
-        
-        if (!r.ok) {
-           const errText = await r.text();
-           throw new Error(errText);
-        }
-        
-        res(await r.json());
-      } catch (e) {
-        rej(e);
-      }
-    };
-    reader.readAsArrayBuffer(blob);
+  const metadataPart = JSON.stringify(meta);
+  
+  // Use a Blob to construct the multipart body efficiently (especially for large audio files)
+  const bodyParts: (string | Blob | ArrayBuffer)[] = [
+    delimiter,
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+    metadataPart,
+    delimiter,
+    `Content-Type: ${type}\r\n\r\n`,
+    content,
+    closeDelimiter
+  ];
+
+  const body = new Blob(bodyParts);
+
+  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+    method: 'POST',
+    headers: { 
+      Authorization: `Bearer ${accessToken}`, 
+      'Content-Type': `multipart/related; boundary=${boundary}` 
+    },
+    body
   });
+  
+  if (!r.ok) {
+     const errText = await r.text();
+     throw new Error(errText);
+  }
+  
+  return await r.json();
 };
 
 export const uploadAudioToDrive = (name: string, blob: Blob) => uploadFile(name, blob, blob.type, 'Audio', false);

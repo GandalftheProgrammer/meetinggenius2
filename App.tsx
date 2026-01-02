@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Recorder from './components/Recorder';
@@ -10,7 +9,6 @@ import { initDrive, connectToDrive, uploadAudioToDrive, uploadTextToDrive, disco
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
-  // Reverted to Gemini 2.5 Flash as default per instructions
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash');
   
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
@@ -109,7 +107,6 @@ const App: React.FC = () => {
 
   const getFormattedDateTime = (dateInput?: Date) => {
       const now = dateInput || new Date();
-      // Date format using 'at' as requested
       const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
       const timePart = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
       return `${datePart} at ${timePart}`;
@@ -118,12 +115,23 @@ const App: React.FC = () => {
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
-    try {
-      if (blob) {
+    
+    // Separate try-catch blocks for each file to ensure they don't block each other
+    
+    // 1. Audio
+    if (blob) {
+      try {
         addLog("Syncing audio...");
         await uploadAudioToDrive(safeTitle, blob);
+        addLog("Audio saved to Drive ✅");
+      } catch (e) {
+        addLog("Audio sync failed.");
       }
-      if (data.summary && data.summary.length > 0) {
+    }
+
+    // 2. Notes
+    if (data.summary && data.summary.length > 0) {
+      try {
         const notesMarkdown = `
 # Meeting Notes: ${currentTitle}
 ## Summary
@@ -135,14 +143,21 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
         `.trim();
         addLog("Syncing notes...");
         await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
+        addLog("Notes saved to Drive ✅");
+      } catch (e) {
+        addLog("Notes sync failed.");
       }
-      if (data.transcription && data.transcription.length > 0) {
+    }
+
+    // 3. Transcript
+    if (data.transcription && data.transcription.length > 0) {
+      try {
         addLog("Syncing transcript...");
         await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
+        addLog("Transcript saved to Drive ✅");
+      } catch (e) {
+        addLog("Transcript sync failed.");
       }
-      addLog("All files safely saved to Drive ✅");
-    } catch (e) {
-      addLog("Auto-sync to Drive failed.");
     }
   };
 
