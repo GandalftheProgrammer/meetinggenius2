@@ -10,7 +10,8 @@ import { initDrive, connectToDrive, uploadAudioToDrive, uploadTextToDrive, disco
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-3-flash-preview');
+  // CHANGED: Default model is now gemini-2.5-flash-lite
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash-lite');
   const [lastRequestedMode, setLastRequestedMode] = useState<ProcessingMode>('NOTES_ONLY');
   
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
