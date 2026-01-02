@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, Download } from 'lucide-react';
+import { FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, Download, Eye } from 'lucide-react';
 import { MeetingData, ProcessingMode } from '../types';
 
 interface ResultsProps {
@@ -25,9 +25,9 @@ const Results: React.FC<ResultsProps> = ({
   audioBlob,
   initialMode = 'NOTES_ONLY'
 }) => {
-  const [activeTab, setActiveTab] = useState<'notes' | 'transcription'>(
-    initialMode === 'TRANSCRIPT_ONLY' ? 'transcription' : 'notes'
-  );
+  // Use state to track which columns are "revealed"
+  const [showNotes, setShowNotes] = useState(initialMode !== 'TRANSCRIPT_ONLY');
+  const [showTranscript, setShowTranscript] = useState(initialMode !== 'NOTES_ONLY');
 
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
@@ -108,17 +108,22 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   };
 
   const renderPlaceholder = (type: 'notes' | 'transcript') => {
-    const isTranscript = type === 'transcript';
-    const mode = isTranscript ? 'TRANSCRIPT_ONLY' : 'NOTES_ONLY';
+    const isNotes = type === 'notes';
     return (
       <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-4 p-8 border-2 border-dashed border-slate-100 rounded-xl bg-slate-50/50">
         <div className="p-3 bg-white rounded-full shadow-sm">
-           {isTranscript ? <FileText className="w-6 h-6 text-slate-300" /> : <ListChecks className="w-6 h-6 text-slate-300" />}
+           {isNotes ? <ListChecks className="w-6 h-6 text-slate-300" /> : <FileText className="w-6 h-6 text-slate-300" />}
         </div>
         <div className="text-center">
-          <p className="text-slate-600 font-medium mb-1">{isTranscript ? "No transcription available" : "No notes available"}</p>
-          <button onClick={() => onGenerateMissing(mode)} disabled={isProcessingMissing} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-blue-600 hover:text-blue-700 hover:border-blue-300 rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow disabled:opacity-70 disabled:cursor-not-allowed">
-            {isProcessingMissing ? <><Loader2 className="w-4 h-4 animate-spin" />Processing...</> : <><PlusCircle className="w-4 h-4" />Generate {isTranscript ? "Transcription" : "Notes"}</>}
+          <p className="text-slate-600 font-medium mb-3">
+            {isNotes ? "Notes hidden" : "Transcript hidden"}
+          </p>
+          <button 
+            onClick={() => isNotes ? setShowNotes(true) : setShowTranscript(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-blue-600 hover:text-blue-700 hover:border-blue-300 rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow"
+          >
+            <Eye className="w-4 h-4" />
+            Show {isNotes ? "Notes" : "Transcript"}
           </button>
         </div>
       </div>
@@ -135,25 +140,35 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
            {hasTranscript && <button onClick={() => downloadAsDoc(transcriptionMarkdown, 'transcript')} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
         </div>
       </div>
-      <div className="md:hidden flex p-1 bg-slate-200/50 rounded-xl mb-6">
-        <button onClick={() => setActiveTab('notes')} className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === 'notes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400'}`}>Notes</button>
-        <button onClick={() => setActiveTab('transcription')} className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all ${activeTab === 'transcription' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400'}`}>Transcript</button>
-      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 h-[calc(100vh-220px)] min-h-[500px]">
-        <div className={`flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden ${activeTab === 'notes' ? 'block' : 'hidden md:flex'}`}>
+        {/* NOTES COLUMN */}
+        <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <div className="flex items-center gap-2"><ListChecks className="w-5 h-5 text-blue-500" /><h2 className="font-semibold text-slate-800">Structured Notes</h2></div>
+            <div className="flex items-center gap-2">
+              <ListChecks className={`w-5 h-5 ${showNotes ? 'text-blue-500' : 'text-slate-300'}`} />
+              <h2 className={`font-semibold ${showNotes ? 'text-slate-800' : 'text-slate-400'}`}>Structured Notes</h2>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-            {hasNotes ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{notesMarkdown}</ReactMarkdown></div> : renderPlaceholder('notes')}
+            {showNotes ? (
+              hasNotes ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{notesMarkdown}</ReactMarkdown></div> : <p className="text-slate-400 italic">No notes data...</p>
+            ) : renderPlaceholder('notes')}
           </div>
         </div>
-        <div className={`flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden ${activeTab === 'transcription' ? 'block' : 'hidden md:flex'}`}>
+
+        {/* TRANSCRIPT COLUMN */}
+        <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <div className="flex items-center gap-2"><FileText className="w-5 h-5 text-purple-500" /><h2 className="font-semibold text-slate-800">Full Transcription</h2></div>
+            <div className="flex items-center gap-2">
+              <FileText className={`w-5 h-5 ${showTranscript ? 'text-purple-500' : 'text-slate-300'}`} />
+              <h2 className={`font-semibold ${showTranscript ? 'text-slate-800' : 'text-slate-400'}`}>Full Transcription</h2>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-            {hasTranscript ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{data.transcription}</ReactMarkdown></div> : renderPlaceholder('transcript')}
+            {showTranscript ? (
+              hasTranscript ? <div className="prose prose-slate prose-sm max-w-none"><ReactMarkdown>{data.transcription}</ReactMarkdown></div> : <p className="text-slate-400 italic">No transcript data...</p>
+            ) : renderPlaceholder('transcript')}
           </div>
         </div>
       </div>

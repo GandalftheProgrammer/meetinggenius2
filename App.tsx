@@ -10,7 +10,7 @@ import { initDrive, connectToDrive, uploadAudioToDrive, uploadTextToDrive, disco
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [title, setTitle] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash');
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-3-flash-preview');
   const [lastRequestedMode, setLastRequestedMode] = useState<ProcessingMode>('NOTES_ONLY');
   
   const [meetingData, setMeetingData] = useState<MeetingData | null>(null);
@@ -30,7 +30,7 @@ const App: React.FC = () => {
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   const addLog = (msg: string) => {
-    setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString('en-GB').split(' ')[0]} ${msg}`]);
+    setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString('en-GB')} ${msg}`]);
   };
 
   useEffect(() => {
@@ -38,7 +38,7 @@ const App: React.FC = () => {
       initDrive((token) => {
           if (token) {
               setIsDriveConnected(true);
-              addLog("Google Drive: Connected");
+              addLog("Drive link active.");
           } else {
               setIsDriveConnected(false);
           }
@@ -52,7 +52,7 @@ const App: React.FC = () => {
       if (storedName) {
           connectToDrive();
       } else {
-          const folderName = prompt("Choose a Google Drive folder name for your data:", "MeetingGenius");
+          const folderName = prompt("Drive folder name?", "MeetingGenius");
           if (folderName) {
               localStorage.setItem('drive_folder_name', folderName);
               connectToDrive();
@@ -63,7 +63,7 @@ const App: React.FC = () => {
   const handleDisconnectDrive = () => {
     disconnectDrive();
     setIsDriveConnected(false);
-    addLog("Google Drive: Disconnected");
+    addLog("Drive disconnected.");
   };
 
   useEffect(() => {
@@ -89,7 +89,7 @@ const App: React.FC = () => {
       setIsUploadedFile(true);
       setUploadedFileDate(new Date(file.lastModified));
       setAppState(AppState.PAUSED);
-      addLog(`File uploaded: ${file.name}`);
+      addLog(`New file: ${file.name}`);
       if (!title) {
           setTitle(file.name.replace(/\.[^/.]+$/, ""));
       }
@@ -107,42 +107,32 @@ const App: React.FC = () => {
     }
   };
 
-  const getFormattedDateTime = (dateInput?: Date) => {
-      const now = dateInput || new Date();
-      const datePart = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-      const hours = now.getHours().toString().padStart(2, '0');
-      const minutes = now.getMinutes().toString().padStart(2, '0');
-      return `${datePart} at ${hours}h${minutes}m`;
-  };
-
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
     
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
-    addLog("Drive sync gestart...");
+    addLog("Initiating Drive cloud sync...");
 
     // 1. Audio
     if (blob) {
       uploadAudioToDrive(safeTitle, blob)
-        .then(() => addLog("Audio opgeslagen ✅"))
-        .catch(e => { addLog("Audio sync mislukt ❌"); console.error(e); });
+        .then(() => addLog("Audio synced successfully."))
+        .catch(e => addLog("Audio sync failed."));
     }
 
     // 2. Notes
-    if (data.summary && data.summary.length > 0) {
-      const notesMarkdown = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}`;
-      addLog("Notes opslaan...");
+    if (data.summary) {
+      const notesMarkdown = `# Notes: ${currentTitle}\n\n${data.summary}\n\n## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
       uploadTextToDrive(`${safeTitle} Notes`, notesMarkdown, 'Notes')
-        .then(() => addLog("Notes opgeslagen ✅"))
-        .catch(e => { addLog("Notes sync mislukt ❌"); console.error(e); });
+        .then(() => addLog("Notes synced successfully."))
+        .catch(e => addLog("Notes sync failed."));
     }
 
     // 3. Transcript
-    if (data.transcription && data.transcription.length > 0) {
-      addLog("Transcript opslaan...");
+    if (data.transcription) {
       uploadTextToDrive(`${safeTitle} Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts')
-        .then(() => addLog("Transcript opgeslagen ✅"))
-        .catch(e => { addLog("Transcript sync mislukt ❌"); console.error(e); });
+        .then(() => addLog("Transcript synced successfully."))
+        .catch(e => addLog("Transcript sync failed."));
     }
   };
 
@@ -150,49 +140,26 @@ const App: React.FC = () => {
     if (!combinedBlob) return;
     
     setLastRequestedMode(mode);
-    const baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
-    const timestampStr = getFormattedDateTime(baseDate);
-    
-    let baseTitle = title.trim() || "Project meeting";
-    let finalTitle = baseTitle;
-    
-    if (!finalTitle.includes(' on ')) {
-      finalTitle = `${baseTitle} on ${timestampStr}`;
-    }
-    
+    let finalTitle = title.trim() || "New Meeting";
     setTitle(finalTitle);
 
-    if (appState === AppState.COMPLETED) {
-      setIsGeneratingMissing(true);
-    } else {
-      setAppState(AppState.PROCESSING);
-    }
+    setAppState(AppState.PROCESSING);
 
     try {
-      addLog(`AI Verwerking gestart...`);
-      // We vragen ALTIJD 'ALL' aan bij de service om alles beschikbaar te hebben voor Drive
+      addLog(`Starting background analysis (requested: ${mode})...`);
+      // We always process EVERYTHING ('ALL') in the background
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', 'ALL', selectedModel, addLog);
       
-      const updatedData = meetingData ? {
-          ...meetingData,
-          transcription: newData.transcription || meetingData.transcription,
-          summary: newData.summary || meetingData.summary,
-          conclusions: newData.conclusions.length > 0 ? newData.conclusions : meetingData.conclusions,
-          actionItems: newData.actionItems.length > 0 ? newData.actionItems : meetingData.actionItems
-      } : newData;
-
-      setMeetingData(updatedData);
+      setMeetingData(newData);
       setAppState(AppState.COMPLETED);
 
       if (isDriveConnected) {
-        autoSyncToDrive(updatedData, finalTitle, combinedBlob);
+        autoSyncToDrive(newData, finalTitle, combinedBlob);
       }
     } catch (apiError) {
-      addLog(`Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
-      setError("Verwerking mislukt.");
+      addLog(`Critical Error: ${apiError instanceof Error ? apiError.message : 'Unknown'}`);
+      setError("Analysis failed.");
       setAppState(AppState.PAUSED); 
-    } finally {
-      setIsGeneratingMissing(false);
     }
   };
 
@@ -205,7 +172,6 @@ const App: React.FC = () => {
     setDebugLogs([]);
     setTitle("");
     setError(null);
-    setIsUploadedFile(false);
   };
 
   return (
@@ -226,13 +192,13 @@ const App: React.FC = () => {
         {appState !== AppState.COMPLETED && (
           <div className="flex flex-col items-center space-y-8 animate-in fade-in duration-500">
             <div className="w-full max-w-lg space-y-2">
-              <label htmlFor="title" className="block text-sm font-medium text-slate-700 ml-1">Meeting Title</label>
+              <label htmlFor="title" className="block text-sm font-medium text-slate-700 ml-1">Title</label>
               <input
                 type="text"
                 id="title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="f.i. Project Team Meeting"
+                placeholder="f.i. Project Update"
                 className="w-full px-4 py-3 rounded-xl border border-slate-200 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none"
                 disabled={appState === AppState.PROCESSING || appState === AppState.RECORDING}
               />

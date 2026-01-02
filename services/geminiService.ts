@@ -2,28 +2,10 @@
 import { GoogleGenAI } from "@google/genai";
 import { MeetingData, ProcessingMode, GeminiModel } from '../types';
 
-/**
- * Dit bestand ondersteunt nu twee modi:
- * 1. Sandbox Mode (Direct via @google/genai SDK als process.env.API_KEY aanwezig is)
- * 2. Production Mode (Via Netlify Backend functies voor chunked uploads)
- */
-
 const SYSTEM_INSTRUCTION = `You are an expert meeting secretary.
-1. CRITICAL: Analyze the audio to detect the primary spoken language.
-2. CRITICAL: All output (transcription, summary, conclusions, action items) MUST be written in the DETECTED LANGUAGE.
-3. If the audio is silent or contains only noise, return a valid JSON with empty fields.
-4. Action items must be EXPLICIT tasks only assigned to specific people if mentioned.
-5. The Summary must be DETAILED and COMPREHENSIVE.
-6. Conclusions & Insights should be extensive, capturing all decisions.
-
-STRICT OUTPUT FORMAT:
-You MUST return a raw JSON object with the following schema:
-{
-  "transcription": "...",
-  "summary": "...",
-  "conclusions": ["..."],
-  "actionItems": ["..."]
-}`;
+1. Analyze audio to detect the primary language.
+2. All output MUST be in the DETECTED LANGUAGE.
+3. Return a raw JSON object with: transcription, summary, conclusions (array), actionItems (array).`;
 
 export const processMeetingAudio = async (
   audioBlob: Blob, 
@@ -39,60 +21,54 @@ export const processMeetingAudio = async (
 
   const mimeType = getMimeTypeFromBlob(audioBlob, defaultMimeType);
 
-  // --- CHECK VOOR SANDBOX MODUS ---
-  // In AI Studio is process.env.API_KEY vaak direct beschikbaar.
   if (process.env.API_KEY) {
-      log("Sandbox gedetecteerd: Gebruik directe client-side SDK...");
-      
-      if (audioBlob.size > 20 * 1024 * 1024) {
-          log("Waarschuwing: Bestand is groot (>20MB). Client-side processing kan traag zijn of falen in de sandbox.");
-      }
-
+      log("Initializing Gemini Client...");
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const base64Audio = await blobToBase64(audioBlob);
 
-      let taskInstruction = "";
-      if (mode === 'TRANSCRIPT_ONLY') taskInstruction = "Transcribe the audio verbatim in the spoken language. Leave summary/conclusions/actionItems empty.";
-      else if (mode === 'NOTES_ONLY') taskInstruction = "Create detailed structured notes in the spoken language. Leave transcription empty.";
-      else taskInstruction = "Transcribe verbatim AND create detailed notes in the spoken language.";
-
+      log("Sending audio to Gemini (Local Mode)...");
       try {
           const response = await ai.models.generateContent({
               model: model,
-              contents: [{
+              contents: {
                   parts: [
                       { inlineData: { data: base64Audio, mimeType: mimeType } },
-                      { text: taskInstruction }
+                      { text: "Generate full transcript and structured notes. Return JSON." }
                   ]
-              }],
+              },
               config: {
                   systemInstruction: SYSTEM_INSTRUCTION,
                   responseMimeType: "application/json"
               }
           });
 
+          log("AI analysis successful.");
           return parseResponse(response.text || "{}", mode);
       } catch (e: any) {
-          log(`SDK Error: ${e.message}`);
+          log(`Error: ${e.message}`);
           throw e;
       }
   }
 
-  // --- BACKEND FALLBACK (NETLIFY) ---
-  log("Geen lokale API-sleutel: Gebruik Netlify backend flow...");
+  log("Starting multi-step upload process...");
   try {
     const totalBytes = audioBlob.size;
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     
-    // Step 1: Chunked Upload
-    const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
+    const UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks
+    const totalChunks = Math.ceil(totalBytes / UPLOAD_CHUNK_SIZE);
     let offset = 0;
     let chunkIndex = 0;
+
+    log(`Total size: ${(totalBytes / (1024 * 1024)).toFixed(2)} MB`);
+    log(`Dividing into ${totalChunks} chunks for upload...`);
 
     while (offset < totalBytes) {
         const chunkEnd = Math.min(offset + UPLOAD_CHUNK_SIZE, totalBytes);
         const chunkBlob = audioBlob.slice(offset, chunkEnd);
         const base64Data = await blobToBase64(chunkBlob);
+
+        log(`Uploading chunk ${chunkIndex + 1}/${totalChunks} to cloud storage...`);
 
         const uploadResp = await fetch('/.netlify/functions/gemini', {
             method: 'POST',
@@ -100,22 +76,24 @@ export const processMeetingAudio = async (
             body: JSON.stringify({ action: 'upload_chunk', jobId, chunkIndex, data: base64Data })
         });
 
-        if (!uploadResp.ok) throw new Error(`Upload Failed at chunk ${chunkIndex}`);
+        if (!uploadResp.ok) throw new Error(`Upload failed at chunk ${chunkIndex}`);
         offset += UPLOAD_CHUNK_SIZE;
         chunkIndex++;
     }
     
-    // Step 2: Trigger Processing
+    log("Cloud upload complete. Triggering background AI worker...");
     await fetch('/.netlify/functions/gemini-background', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId, totalChunks: chunkIndex, mimeType, mode, model, fileSize: totalBytes })
+        body: JSON.stringify({ jobId, totalChunks: chunkIndex, mimeType, mode: 'ALL', model, fileSize: totalBytes })
     });
 
-    // Step 3: Polling
+    log("Background worker started. Waiting for Gemini to process audio...");
     let attempts = 0;
     while (attempts < 300) {
         attempts++;
+        if (attempts % 4 === 0) log(`Gemini is still working... (Step ${attempts})`);
+        
         await new Promise(r => setTimeout(r, 3000));
         const pollResp = await fetch('/.netlify/functions/gemini', {
             method: 'POST',
@@ -125,11 +103,17 @@ export const processMeetingAudio = async (
 
         if (pollResp.status === 200) {
             const data = await pollResp.json();
-            if (data.status === 'COMPLETED') return parseResponse(data.result, mode);
-            if (data.status === 'ERROR') throw new Error(data.error);
+            if (data.status === 'COMPLETED') {
+                log("Processing complete! Fetching results...");
+                return parseResponse(data.result, mode);
+            }
+            if (data.status === 'ERROR') {
+                log(`Critical Failure: ${data.error}`);
+                throw new Error(data.error);
+            }
         }
     }
-    throw new Error("Polling Timeout");
+    throw new Error("Job timed out.");
   } catch (error) {
     throw error;
   }
@@ -157,24 +141,15 @@ function blobToBase64(blob: Blob): Promise<string> {
 
 function parseResponse(jsonText: string, mode: ProcessingMode): MeetingData {
     const cleanText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
-    let transcription = "";
-    let summary = "";
-    let conclusions: string[] = [];
-    let actionItems: string[] = [];
-
     try {
         const rawData = JSON.parse(cleanText);
-        transcription = rawData.transcription || "";
-        summary = rawData.summary || "";
-        conclusions = rawData.conclusions || rawData.decisions || [];
-        actionItems = rawData.actionItems || [];
+        return {
+            transcription: rawData.transcription || "",
+            summary: rawData.summary || "",
+            conclusions: rawData.conclusions || [],
+            actionItems: rawData.actionItems || []
+        };
     } catch (e) {
-        if (mode === 'TRANSCRIPT_ONLY') transcription = cleanText;
-        else summary = cleanText;
+        return { transcription: "", summary: "Error parsing result", conclusions: [], actionItems: [] };
     }
-
-    if (mode === 'TRANSCRIPT_ONLY') { summary = ""; conclusions = []; actionItems = []; }
-    else if (mode === 'NOTES_ONLY') { transcription = ""; }
-
-    return { transcription, summary, conclusions, actionItems };
 }
