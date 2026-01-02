@@ -53,7 +53,7 @@ export const disconnectDrive = () => {
   localStorage.removeItem('drive_token_expiry');
   localStorage.removeItem('drive_sticky_connection');
   if (typeof google !== 'undefined') {
-      // Optioneel: revoke token
+      // Optional: revoke
   }
 };
 
@@ -120,7 +120,7 @@ const convertMarkdownToHtml = (md: string): string => {
         return `<p>${l}</p>`;
     }).join('');
 
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;line-height:1.5;padding:40px;color:#333}h1{color:#1e293b;border-bottom:2px solid #3b82f6;padding-bottom:8px}h2{color:#334155;margin-top:24px;border-bottom:1px solid #e2e8f0}</style></head><body>${html}</body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;line-height:1.5;padding:40px;color:#333}h1{color:#1e293b;border-bottom:2px solid #3b82f6;padding-bottom:8px}h2{color:#334155;margin-top:24px;border-bottom:1px solid #e2e8f0}li{margin-bottom:4px}</style></head><body>${html}</body></html>`;
 };
 
 const uploadFile = async (name: string, content: string | Blob, type: string, sub: string, toDoc: boolean): Promise<any> => {
@@ -136,7 +136,7 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   const boundary = '-------314159265358979323846';
   const mediaContent = content instanceof Blob ? content : new Blob([content], { type });
 
-  // EXACTE MULTIPART FORMATTERING VOOR GOOGLE DRIVE
+  // EXACT MULTIPART FORMAT FOR GOOGLE DRIVE (RFC-compliant \r\n)
   const bodyParts: (string | Blob)[] = [
     `--${boundary}\r\n`,
     'Content-Type: application/json; charset=UTF-8\r\n\r\n',

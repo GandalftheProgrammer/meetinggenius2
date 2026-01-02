@@ -181,7 +181,7 @@ const Recorder: React.FC<RecorderProps> = ({
             </div>
             <div className="text-center">
               <p className="text-slate-800 font-semibold text-lg">Processing Audio</p>
-              <p className="text-slate-500 text-sm">Uploading & Analyzing...</p>
+              <p className="text-slate-500 text-sm">Generating Notes & Transcription...</p>
             </div>
          </div>
          {debugLogs.length > 0 && (
@@ -269,19 +269,20 @@ const Recorder: React.FC<RecorderProps> = ({
       </div>
 
       {!isRecording && hasRecordedData && (
-        <div className="w-full border-t border-slate-100 pt-6 animate-in slide-in-from-top-4 duration-300">
+        <div className="w-full border-t border-slate-100 pt-6 animate-in slide-in-from-top-4 duration-300 text-center">
           {audioUrl && (
             <div className="w-full bg-slate-50 p-3 rounded-xl border border-slate-200 mb-6 flex flex-col gap-2">
               <span className="text-xs font-semibold text-slate-500 ml-1 uppercase tracking-wide">Preview</span>
               <audio controls src={audioUrl} className="w-full h-8" />
             </div>
           )}
+          <p className="text-xs text-slate-500 mb-4 italic">Press either button to generate BOTH notes and transcript.</p>
           <div className="grid grid-cols-2 gap-3 w-full mb-3">
-            <button onClick={() => onProcessAudio('NOTES_ONLY')} className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700">
+            <button onClick={() => onProcessAudio('ALL')} className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all group text-blue-700">
               <ListChecks className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
               <span className="font-semibold text-sm">Summary</span>
             </button>
-            <button onClick={() => onProcessAudio('TRANSCRIPT_ONLY')} className="flex flex-col items-center justify-center p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-all group text-purple-700">
+            <button onClick={() => onProcessAudio('ALL')} className="flex flex-col items-center justify-center p-3 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-all group text-purple-700">
               <FileText className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
               <span className="font-semibold text-sm">Transcription</span>
             </button>

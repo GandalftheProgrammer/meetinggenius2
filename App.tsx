@@ -120,14 +120,14 @@ const App: React.FC = () => {
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
     addLog("Drive sync gestart...");
 
-    // 1. Audio (Groot bestand, we wachten hier niet op voor de rest)
+    // 1. Audio
     if (blob) {
       uploadAudioToDrive(safeTitle, blob)
         .then(() => addLog("Audio opgeslagen ✅"))
         .catch(e => { addLog("Audio sync mislukt ❌"); console.error(e); });
     }
 
-    // 2. Notes (Klein bestand, direct versturen)
+    // 2. Notes
     if (data.summary && data.summary.length > 0) {
       const notesMarkdown = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}`;
       addLog("Notes opslaan...");
@@ -136,7 +136,7 @@ const App: React.FC = () => {
         .catch(e => { addLog("Notes sync mislukt ❌"); console.error(e); });
     }
 
-    // 3. Transcript (Klein bestand, direct versturen)
+    // 3. Transcript
     if (data.transcription && data.transcription.length > 0) {
       addLog("Transcript opslaan...");
       uploadTextToDrive(`${safeTitle} Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts')
@@ -167,8 +167,9 @@ const App: React.FC = () => {
     }
 
     try {
-      addLog(`AI Verwerking gestart met ${selectedModel}...`);
-      const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', mode, selectedModel, addLog);
+      addLog(`AI Verwerking gestart (transcript + notes)...`);
+      // Forceer mode 'ALL' zodat alles wordt gegenereerd
+      const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', 'ALL', selectedModel, addLog);
       
       const updatedData = meetingData ? {
           ...meetingData,
@@ -182,6 +183,7 @@ const App: React.FC = () => {
       setAppState(AppState.COMPLETED);
 
       if (isDriveConnected) {
+        // Synchroniseer beide onderdelen naar Drive
         autoSyncToDrive(updatedData, finalTitle, combinedBlob);
       }
     } catch (apiError) {
