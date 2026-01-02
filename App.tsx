@@ -5,7 +5,7 @@ import Recorder from './components/Recorder';
 import Results from './components/Results';
 import { AppState, MeetingData, ProcessingMode, GeminiModel } from './types';
 import { processMeetingAudio } from './services/geminiService';
-import { initDrive, connectToDrive, uploadTextToDrive, uploadAudioToDrive, disconnectDrive } from './services/driveService';
+import { initDrive, connectToDrive, uploadAudioToDrive, uploadTextToDrive, disconnectDrive } from './services/driveService';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
@@ -41,7 +41,6 @@ const App: React.FC = () => {
     setDebugLogs(prev => [...prev, `${new Date().toLocaleTimeString().split(' ')[0]} ${msg}`]);
   };
 
-  // Initialize Drive on mount with better state handling
   useEffect(() => {
     const timer = setTimeout(() => {
       initDrive((token) => {
@@ -52,7 +51,7 @@ const App: React.FC = () => {
               setIsDriveConnected(false);
           }
       });
-    }, 500); // Small delay to ensure Google script is ready
+    }, 500);
     return () => clearTimeout(timer);
   }, []);
 
@@ -121,34 +120,72 @@ const App: React.FC = () => {
       return now.toLocaleString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  const saveAudioBackup = async () => {
+  const saveAudioBackup = async (overrideTitle?: string) => {
     if (!combinedBlob || !isDriveConnected) return;
-    const currentTitle = title.trim() || `Meeting ${getFormattedDateTime()}`;
-    const safeTitle = currentTitle.replace(/[^a-z0-9\s-]/gi, '_');
+    const currentTitle = overrideTitle || title.trim() || `Meeting - ${getFormattedDateTime()}`;
+    const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
     try {
-        addLog("Audio back-up starten...");
+        addLog("Audio back-up naar Drive...");
         const result = await uploadAudioToDrive(safeTitle, combinedBlob);
-        if (result.webViewLink) addLog(`Audio bewaard: ${result.webViewLink}`);
+        if (result.webViewLink) addLog("Audio succesvol bewaard.");
     } catch (err) {
         addLog("Waarschuwing: Audio back-up mislukt.");
     }
   };
 
+  // Nieuwe helper voor automatische Drive sync van tekst
+  const autoSyncToDrive = async (data: MeetingData, currentTitle: string) => {
+    if (!isDriveConnected) return;
+    
+    try {
+      if (data.summary && data.summary.length > 0) {
+        const notesMarkdown = `
+# Meeting Notes: ${currentTitle}
+## Summary
+${data.summary}
+## Conclusions & Insights
+${data.conclusions.map(d => `- ${d}`).join('\n')}
+## Action Items
+${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
+        `.trim();
+        addLog("Notes syncen naar Drive...");
+        await uploadTextToDrive(`${currentTitle}_Notes`, notesMarkdown, 'Notes');
+      }
+
+      if (data.transcription && data.transcription.length > 0) {
+        addLog("Transcript syncen naar Drive...");
+        await uploadTextToDrive(`${currentTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
+      }
+      
+      addLog("Drive Sync Voltooid ✅");
+    } catch (e) {
+      addLog("Sync naar Drive mislukt.");
+      console.error(e);
+    }
+  };
+
   const handleProcessAudio = async (mode: ProcessingMode) => {
     if (!combinedBlob) return;
+    
     let baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
     const timestamp = getFormattedDateTime(baseDate);
-    let currentTitle = title.trim() || `Meeting ${timestamp}`;
-    if (title.trim() && !currentTitle.includes(timestamp)) {
-        currentTitle = `${currentTitle} - ${timestamp}`;
+    let finalTitle = title.trim();
+    
+    if (!finalTitle) {
+      finalTitle = `Meeting - ${timestamp}`;
+    } else if (!finalTitle.includes(timestamp)) {
+      finalTitle = `${finalTitle} - ${timestamp}`;
     }
-    setTitle(currentTitle);
+    
+    setTitle(finalTitle);
 
     if (appState === AppState.COMPLETED) {
       setIsGeneratingMissing(true);
     } else {
       setAppState(AppState.PROCESSING);
-      if (!isUploadedFile) saveAudioBackup();
+      if (isDriveConnected) {
+        saveAudioBackup(finalTitle);
+      }
     }
     
     try {
@@ -165,9 +202,15 @@ const App: React.FC = () => {
       
       setMeetingData(updatedData);
       setAppState(AppState.COMPLETED);
+      
+      // DIRECTE AUTO-SAVE van tekstbestanden bij voltooiing
+      if (isDriveConnected) {
+        autoSyncToDrive(updatedData, finalTitle);
+      }
+      
     } catch (apiError) {
       addLog(`Fout: ${apiError instanceof Error ? apiError.message : 'Onbekend'}`);
-      setError("Verwerking mislukt. Bekijk de logs.");
+      setError("Verwerking mislukt.");
       setAppState(AppState.PAUSED); 
     } finally {
       setIsGeneratingMissing(false);
@@ -225,7 +268,7 @@ const App: React.FC = () => {
               onDiscard={handleDiscard}
               onRecordingChange={handleRecordingChange}
               onFileUpload={handleFileUpload}
-              onSaveAudio={isDriveConnected ? saveAudioBackup : undefined}
+              onSaveAudio={isDriveConnected ? () => saveAudioBackup() : undefined}
               audioUrl={audioUrl}
               debugLogs={debugLogs}
             />
@@ -241,7 +284,7 @@ const App: React.FC = () => {
             isProcessingMissing={isGeneratingMissing} 
             isDriveConnected={isDriveConnected}
             onConnectDrive={handleConnectDrive}
-            onSaveAudio={isDriveConnected ? saveAudioBackup : undefined}
+            onSaveAudio={isDriveConnected ? () => saveAudioBackup() : undefined}
           />
         )}
       </main>

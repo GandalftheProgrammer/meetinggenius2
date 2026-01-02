@@ -1,9 +1,8 @@
 
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, CheckCircle, ExternalLink, Download } from 'lucide-react';
+import { FileText, ListChecks, ArrowLeft, Loader2, PlusCircle, FileAudio, CheckCircle, Download } from 'lucide-react';
 import { MeetingData, ProcessingMode } from '../types';
-import { uploadTextToDrive } from '../services/driveService';
 
 interface ResultsProps {
   data: MeetingData;
@@ -29,12 +28,6 @@ const Results: React.FC<ResultsProps> = ({
   const [activeTab, setActiveTab] = useState<'notes' | 'transcription'>('notes');
   const [isAudioSaving, setIsAudioSaving] = useState(false);
   const [audioSaved, setAudioSaved] = useState(false);
-  
-  // Track Google Doc links
-  const [notesDocLink, setNotesDocLink] = useState<string | null>(null);
-  const [transcriptDocLink, setTranscriptDocLink] = useState<string | null>(null);
-  const [isUploadingNotes, setIsUploadingNotes] = useState(false);
-  const [isUploadingTranscript, setIsUploadingTranscript] = useState(false);
 
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
@@ -58,7 +51,6 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   const notesMarkdown = getNotesMarkdown();
   const transcriptionMarkdown = `# Transcription: ${title}\n\n${data.transcription}`;
 
-  // Helper for Local .doc download (Word-compatible HTML)
   const downloadAsDoc = (markdown: string, suffix: string) => {
     const htmlBody = markdown
       .replace(/^# (.*$)/gm, '<h1>$1</h1>')
@@ -103,44 +95,6 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     URL.revokeObjectURL(url);
   };
 
-  const handleAction = async (type: 'notes' | 'transcript') => {
-    const isNotes = type === 'notes';
-    const content = isNotes ? notesMarkdown : transcriptionMarkdown;
-    const suffix = isNotes ? 'notes' : 'transcript';
-
-    // If already has a link, just open it
-    const existingLink = isNotes ? notesDocLink : transcriptDocLink;
-    if (existingLink) {
-        window.open(existingLink, '_blank');
-        return;
-    }
-
-    // Flow 1: Connected Drive -> Create and Open GDOC
-    if (isDriveConnected) {
-        const setter = isNotes ? setIsUploadingNotes : setIsUploadingTranscript;
-        const linkSetter = isNotes ? setNotesDocLink : setTranscriptDocLink;
-        
-        setter(true);
-        try {
-            const result = await uploadTextToDrive(`${title}_${suffix}`, content, isNotes ? 'Notes' : 'Transcripts');
-            if (result.webViewLink) {
-                linkSetter(result.webViewLink);
-                window.open(result.webViewLink, '_blank');
-            }
-        } catch (e) {
-            console.error("GDOC export failed", e);
-            alert("Error creating Google Doc. Falling back to local download.");
-            downloadAsDoc(content, suffix);
-        } finally {
-            setter(false);
-        }
-    } 
-    // Flow 2: Not connected -> Standard .doc download
-    else {
-        downloadAsDoc(content, suffix);
-    }
-  };
-
   const handleManualAudioSave = async () => {
       if (!onSaveAudio) return;
       setIsAudioSaving(true);
@@ -150,7 +104,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           setTimeout(() => setAudioSaved(false), 3000);
       } catch (e) {
           console.error(e);
-          alert("Failed to save audio to Drive");
+          alert("Opslaan audio mislukt");
       } finally {
           setIsAudioSaving(false);
       }
@@ -167,7 +121,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
         </div>
         <div className="text-center">
           <p className="text-slate-600 font-medium mb-1">
-            {isTranscript ? "No Transcript Generated" : "No Summary Generated"}
+            {isTranscript ? "Nog geen transcript" : "Nog geen samenvatting"}
           </p>
           <button 
             onClick={() => onGenerateMissing(mode)}
@@ -175,9 +129,9 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-blue-600 hover:text-blue-700 hover:border-blue-300 rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow disabled:opacity-70 disabled:cursor-not-allowed"
           >
             {isProcessingMissing ? (
-              <><Loader2 className="w-4 h-4 animate-spin" />Generating...</>
+              <><Loader2 className="w-4 h-4 animate-spin" />Genereren...</>
             ) : (
-              <><PlusCircle className="w-4 h-4" />Generate {isTranscript ? "Transcript" : "Summary"}</>
+              <><PlusCircle className="w-4 h-4" />Genereer {isTranscript ? "Transcript" : "Summary"}</>
             )}
           </button>
         </div>
@@ -193,7 +147,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors text-sm font-medium"
         >
           <ArrowLeft className="w-4 h-4" />
-          Start New Recording
+          Nieuwe opname
         </button>
         
         <div className="flex flex-wrap items-center gap-2">
@@ -206,37 +160,27 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
                }`}
              >
                {isAudioSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : audioSaved ? <CheckCircle className="w-4 h-4" /> : <FileAudio className="w-4 h-4" />}
-               {audioSaved ? "Saved!" : "Audio"}
+               {audioSaved ? "Bewaard!" : "Audio"}
              </button>
            )}
 
            {hasNotes && (
              <button
-               onClick={() => handleAction('notes')}
-               disabled={isUploadingNotes}
-               className={`flex items-center gap-2 px-5 py-2.5 border rounded-xl text-sm font-semibold transition-all shadow-sm ${
-                 notesDocLink 
-                 ? 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50' 
-                 : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-               }`}
+               onClick={() => downloadAsDoc(notesMarkdown, 'notes')}
+               className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-sm font-semibold transition-all shadow-sm"
              >
-               {isUploadingNotes ? <Loader2 className="w-4 h-4 animate-spin" /> : (notesDocLink ? <ExternalLink className="w-4 h-4" /> : (isDriveConnected ? <ListChecks className="w-4 h-4" /> : <Download className="w-4 h-4" />))}
-               {notesDocLink ? "Open Notes" : "Notes"}
+               <Download className="w-4 h-4" />
+               Notes
              </button>
            )}
            
            {hasTranscript && (
              <button
-               onClick={() => handleAction('transcript')}
-               disabled={isUploadingTranscript}
-               className={`flex items-center gap-2 px-5 py-2.5 border rounded-xl text-sm font-semibold transition-all shadow-sm ${
-                 transcriptDocLink 
-                 ? 'bg-white border-purple-200 text-purple-600 hover:bg-purple-50' 
-                 : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-               }`}
+               onClick={() => downloadAsDoc(transcriptionMarkdown, 'transcript')}
+               className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-sm font-semibold transition-all shadow-sm"
              >
-               {isUploadingTranscript ? <Loader2 className="w-4 h-4 animate-spin" /> : (transcriptDocLink ? <ExternalLink className="w-4 h-4" /> : (isDriveConnected ? <FileText className="w-4 h-4" /> : <Download className="w-4 h-4" />))}
-               {transcriptDocLink ? "Open Transcript" : "Transcript"}
+               <Download className="w-4 h-4" />
+               Transcript
              </button>
            )}
         </div>
