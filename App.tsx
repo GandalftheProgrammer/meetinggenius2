@@ -118,19 +118,16 @@ const App: React.FC = () => {
   const autoSyncToDrive = async (data: MeetingData, currentTitle: string, blob: Blob | null) => {
     if (!isDriveConnected) return;
     
-    // Verwijder verboden karakters voor Google Drive bestandsnamen
     const safeTitle = currentTitle.replace(/[/\\?%*:|"<>]/g, '-');
-    
-    addLog("Starting Drive sync...");
+    addLog("Starting auto-sync to Drive...");
 
     // 1. Audio
     if (blob) {
       try {
-        addLog("Syncing audio...");
         await uploadAudioToDrive(safeTitle, blob);
-        addLog("Audio saved ✅");
+        addLog("Audio saved to Drive ✅");
       } catch (e) {
-        addLog("Audio sync failed.");
+        addLog("Audio sync failed ❌");
         console.error(e);
       }
     }
@@ -138,20 +135,11 @@ const App: React.FC = () => {
     // 2. Notes
     if (data.summary && data.summary.length > 0) {
       try {
-        const notesMarkdown = `
-# Meeting Notes: ${currentTitle}
-## Summary
-${data.summary}
-## Conclusions & Insights
-${data.conclusions.map(d => `- ${d}`).join('\n')}
-## Action Items
-${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
-        `.trim();
-        addLog("Syncing notes...");
+        const notesMarkdown = `# Meeting Notes: ${currentTitle}\n\n## Summary\n${data.summary}\n\n## Conclusions\n${data.conclusions.map(d => `- ${d}`).join('\n')}\n\n## Action Items\n${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}`;
         await uploadTextToDrive(`${safeTitle}_Notes`, notesMarkdown, 'Notes');
-        addLog("Notes saved ✅");
+        addLog("Notes saved to Drive ✅");
       } catch (e) {
-        addLog("Notes sync failed.");
+        addLog("Notes sync failed ❌");
         console.error(e);
       }
     }
@@ -159,16 +147,15 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     // 3. Transcript
     if (data.transcription && data.transcription.length > 0) {
       try {
-        addLog("Syncing transcript...");
-        await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcription: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
-        addLog("Transcript saved ✅");
+        await uploadTextToDrive(`${safeTitle}_Transcript`, `# Transcript: ${currentTitle}\n\n${data.transcription}`, 'Transcripts');
+        addLog("Transcript saved to Drive ✅");
       } catch (e) {
-        addLog("Transcript sync failed.");
+        addLog("Transcript sync failed ❌");
         console.error(e);
       }
     }
     
-    addLog("Sync finished.");
+    addLog("Sync complete.");
   };
 
   const handleProcessAudio = async (mode: ProcessingMode) => {
@@ -177,14 +164,12 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     const baseDate = (isUploadedFile && uploadedFileDate) ? uploadedFileDate : (recordingStartTime || new Date());
     const timestampStr = getFormattedDateTime(baseDate);
     
-    let finalTitle = title.trim();
-    if (!finalTitle) {
-      finalTitle = `Meeting on ${timestampStr}`;
-    } else {
-      // Zorg voor het formaat: "[Titel] on [Datum] at [Tijd]"
-      if (!finalTitle.includes(' on ')) {
-        finalTitle = `${finalTitle} on ${timestampStr}`;
-      }
+    // Bouw de titel exact op volgens het sjabloon: "[title] on [date] at [time]"
+    let baseTitle = title.trim() || "Project meeting";
+    let finalTitle = baseTitle;
+    
+    if (!finalTitle.includes(' on ')) {
+      finalTitle = `${baseTitle} on ${timestampStr}`;
     }
     
     setTitle(finalTitle);
@@ -196,7 +181,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     }
 
     try {
-      addLog(`AI Model: ${selectedModel}`);
+      addLog(`Processing with ${selectedModel}...`);
       const newData = await processMeetingAudio(combinedBlob, combinedBlob.type || 'audio/webm', mode, selectedModel, addLog);
       
       const updatedData = meetingData ? {
@@ -211,7 +196,6 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
       setAppState(AppState.COMPLETED);
 
       if (isDriveConnected) {
-        // We wachten niet op de sync voor de UI update, maar voeren hem wel uit
         autoSyncToDrive(updatedData, finalTitle, combinedBlob);
       }
     } catch (apiError) {

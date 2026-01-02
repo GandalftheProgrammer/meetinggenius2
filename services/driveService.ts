@@ -7,6 +7,7 @@ let tokenClient: any;
 let accessToken: string | null = null;
 let mainFolderId: string | null = null;
 let folderLock: Promise<string> | null = null;
+const subFolderCache: Record<string, string> = {};
 
 export const initDrive = (callback: (token: string | null) => void) => {
   if (typeof google === 'undefined') return;
@@ -48,6 +49,7 @@ export const disconnectDrive = () => {
   accessToken = null;
   mainFolderId = null;
   folderLock = null;
+  Object.keys(subFolderCache).forEach(k => delete subFolderCache[k]);
   localStorage.removeItem('drive_token');
   localStorage.removeItem('drive_token_expiry');
   localStorage.removeItem('drive_sticky_connection');
@@ -77,7 +79,6 @@ const createFolder = async (name: string, parentId?: string): Promise<string> =>
   return d.id;
 };
 
-// Zorgt voor een veilige, eenmalige aanmaak van de hoofdmap en submappen
 const ensureFolder = async (sub: string): Promise<string> => {
     const main = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
     
@@ -94,8 +95,10 @@ const ensureFolder = async (sub: string): Promise<string> => {
 
     if (!mainFolderId) throw new Error("Could not access main folder");
     
-    // Check subfolder
+    if (subFolderCache[sub]) return subFolderCache[sub];
+
     const subId = await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
+    subFolderCache[sub] = subId;
     return subId;
 };
 
@@ -118,16 +121,12 @@ const convertMarkdownToHtml = (md: string): string => {
         return `<p>${l}</p>`;
     }).join('');
 
-    return `
-      <!DOCTYPE html><html><head><meta charset="utf-8">
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
       <style>
-        body { font-family: Arial, sans-serif; line-height: 1.2; color: #333; margin: 0; padding: 40px; }
-        h1 { color: #1e293b; font-size: 22pt; margin: 0 0 12pt 0; padding: 0; font-weight: bold; }
-        h2 { color: #334155; font-size: 16pt; margin: 14pt 0 6pt 0; font-weight: bold; border-bottom: 1px solid #eee; }
-        h3 { color: #475569; font-size: 13pt; margin: 10pt 0 4pt 0; font-weight: bold; }
-        p { margin: 0 0 8pt 0; }
-        ul { margin: 0 0 10pt 0; padding-left: 20pt; }
-        li { margin-bottom: 3pt; }
+        body { font-family: sans-serif; line-height: 1.4; padding: 40px; }
+        h1 { color: #1e293b; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h2 { color: #334155; margin-top: 20px; border-bottom: 1px solid #eee; }
+        li { margin-bottom: 5px; }
       </style>
       </head><body>${html}</body></html>`;
 };
@@ -136,7 +135,7 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   if (!accessToken) throw new Error("No token");
   const fId = await ensureFolder(sub);
   
-  const cleanName = toDoc ? name.replace(/\.(md|html|txt)$/i, '').replace(/_/g, ' ') : name;
+  const cleanName = toDoc ? name.replace(/\.(md|html|txt)$/i, '') : name;
   const meta = { 
     name: cleanName, 
     parents: [fId], 
@@ -144,18 +143,19 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   };
   
   const boundary = '-------314159265358979323846';
+  // FIX: Gebruik backticks voor template literals om de boundary correct in te voegen
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelimiter = `\r\n--${boundary}--`;
 
   const metadataPart = JSON.stringify(meta);
   
-  const bodyParts: (string | Blob | ArrayBuffer)[] = [
+  const bodyParts: (string | Blob)[] = [
     delimiter,
     'Content-Type: application/json; charset=UTF-8\r\n\r\n',
     metadataPart,
     delimiter,
     `Content-Type: ${type}\r\n\r\n`,
-    content,
+    content instanceof Blob ? content : new Blob([content], { type }),
     closeDelimiter
   ];
 
@@ -172,7 +172,7 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   
   if (!r.ok) {
      const errText = await r.text();
-     throw new Error(errText);
+     throw new Error(`Drive Upload Failed: ${errText}`);
   }
   
   return await r.json();
