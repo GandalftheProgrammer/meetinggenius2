@@ -39,7 +39,7 @@ const App: React.FC = () => {
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     
-    return `${day} ${month} ${year} at ${hours}h${minutes}m`;
+    return `${day} ${month} ${year} - ${hours}h${minutes}m`;
   };
 
   useEffect(() => {
@@ -119,7 +119,7 @@ const App: React.FC = () => {
     
     const startTime = sessionStartTime || new Date();
     const dateString = formatMeetingDateTime(startTime);
-    const safeBaseName = `${currentTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
+    const safeBaseName = `${currentTitle} (${dateString})`.replace(/[/\\?%*:|"<>]/g, '-');
 
     addLog(`Cloud Storage: Syncing...`);
 
@@ -132,7 +132,8 @@ const App: React.FC = () => {
     // 2. Notes
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      let notesMarkdown = `# Notes: ${currentTitle}\n\n`;
+      let notesMarkdown = `# Notes: ${currentTitle}\n`;
+      notesMarkdown += `*Recorded on ${dateString}*\n\n`;
       notesMarkdown += `${data.summary}\n\n`;
       
       if (data.conclusions && data.conclusions.length > 0) {
@@ -149,7 +150,9 @@ const App: React.FC = () => {
     // 3. Transcript
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      const transcriptMarkdown = `# Transcript: ${currentTitle}\n\n${data.transcription}`;
+      // Fix: transcriptMarkdown must be declared with 'let' because it is reassigned below using +=
+      let transcriptMarkdown = `# Transcript: ${currentTitle}\n`;
+      transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription}`;
       uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
     }
   };
