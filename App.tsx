@@ -119,23 +119,20 @@ const App: React.FC = () => {
     const dateString = formatMeetingDateTime(startTime);
     const cleanTitle = currentTitle.replace(/[()]/g, '').trim();
     
-    // Naming format: [title] on [date] at [time]
     const safeBaseName = `${cleanTitle} on ${dateString}`.replace(/[/\\?%*:|"<>]/g, '-');
 
     addLog(`Cloud Storage: Syncing...`);
 
-    // 1. Audio
     if (blob) {
       const audioName = `${safeBaseName} - audio`;
       uploadAudioToDrive(audioName, blob).catch(() => {});
     }
 
-    // 2. Notes
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      let notesMarkdown = `# ${notesName}\n`;
+      let notesMarkdown = `# ${cleanTitle} notes\n\n`;
       notesMarkdown += `*Recorded on ${dateString}*\n\n`;
-      notesMarkdown += `${data.summary}\n\n`;
+      notesMarkdown += `${data.summary.trim()}\n\n`;
       
       if (data.conclusions && data.conclusions.length > 0) {
           notesMarkdown += `## Conclusions & Insights\n${data.conclusions.map(i => `- ${i}`).join('\n')}\n\n`;
@@ -148,11 +145,10 @@ const App: React.FC = () => {
       uploadTextToDrive(notesName, notesMarkdown, 'Notes').catch(() => {});
     }
 
-    // 3. Transcript
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      let transcriptMarkdown = `# ${transcriptName}\n`;
-      transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription}`;
+      let transcriptMarkdown = `# ${cleanTitle} transcript\n\n`;
+      transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription.trim()}`;
       uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
     }
   };

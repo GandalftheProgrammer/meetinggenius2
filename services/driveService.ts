@@ -101,10 +101,10 @@ const ensureFolder = async (sub: string): Promise<string> => {
 const convertMarkdownToHtml = (md: string): string => {
     const innerHtml = md.trim()
         .replace(/^# (.*$)/gm, '<h1 class="title">$1</h1>')
-        .replace(/^## (.*$)/gm, '<h2 class="header">$1</h2>') // Fixed: used $1 instead of $2
-        .replace(/^### (.*$)/gm, '<h3 class="subheader">$1</h3>') // Fixed: used $1 instead of $3
+        .replace(/^## (.*$)/gm, '<h2 class="header">$2</h2>') // Using correct group
+        .replace(/^### (.*$)/gm, '<h3 class="subheader">$3</h3>') 
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/^\*Recorded on (.*)\*$/gm, '<p style="color: #64748b; font-style: italic; margin-bottom: 20px;">Recorded on $1</p>') // Handle the date line specifically
+        .replace(/^\*Recorded on (.*)\*$/gm, '<p class="recorded-on">Recorded on $1</p>')
         .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
         .replace(/- (.*$)/gm, '<li>$1</li>')
         .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
@@ -112,8 +112,9 @@ const convertMarkdownToHtml = (md: string): string => {
         .map(l => {
             const t = l.trim();
             if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li') || t.startsWith('<p')) return l;
-            return `<p class="body-text">${l}</p>`;
+            return `<p class="body-text">${t}</p>`;
         })
+        .filter(l => l.trim() !== '')
         .join('');
 
     return `
@@ -130,9 +131,13 @@ const convertMarkdownToHtml = (md: string): string => {
             color: #1e3a8a;
             font-size: 24pt;
             font-weight: bold;
-            border-bottom: 1pt solid #e2e8f0;
-            padding-bottom: 8pt;
             margin-bottom: 20pt;
+            /* Border removed as requested */
+        }
+        .recorded-on {
+            color: #64748b;
+            font-style: italic;
+            margin-bottom: 24pt;
         }
         .header {
             color: #1e3a8a;
@@ -149,7 +154,7 @@ const convertMarkdownToHtml = (md: string): string => {
         }
         .body-text {
             font-size: 11pt;
-            margin-bottom: 10pt;
+            margin-bottom: 12pt;
         }
         strong {
             color: #1e293b;
@@ -214,4 +219,4 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
 };
 
 export const uploadAudioToDrive = (name: string, blob: Blob) => uploadFile(name, blob, blob.type, 'Audio', false);
-export const uploadTextToDrive = (name: string, content: string, sub: 'Notes' | 'Transcripts') => uploadFile(name, convertMarkdownToHtml(content), 'text/html', sub, true);
+export const uploadTextToDrive = (name: string, content: string, sub: 'Notes' | 'Transcripts') => uploadFile(name, content, 'text/html', sub, true);

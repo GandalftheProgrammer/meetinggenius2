@@ -34,21 +34,21 @@ const Results: React.FC<ResultsProps> = ({
   const baseName = `${cleanTitle} on ${sessionDateString}`;
 
   const notesMarkdown = `
-# ${baseName} - notes
+# ${cleanTitle} notes
 
 *Recorded on ${sessionDateString}*
 
 ## Summary
-${data.summary}
+${data.summary.trim()}
 
-## Conclusions
+## Conclusions & Insights
 ${data.conclusions.map(d => `- ${d}`).join('\n')}
 
 ## Action Items
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   `.trim();
 
-  const transcriptMarkdown = `# ${baseName} - transcription\n\n*Recorded on ${sessionDateString}*\n\n${data.transcription}`;
+  const transcriptMarkdown = `# ${cleanTitle} transcript\n\n*Recorded on ${sessionDateString}*\n\n${data.transcription.trim()}`;
 
   const downloadBlob = (blob: Blob, suffix: string) => {
     const url = URL.createObjectURL(blob);
@@ -65,14 +65,14 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
 
   const downloadAsDoc = (markdown: string, suffix: string) => {
     const htmlBody = markdown
-      .replace(/^# (.*$)/gm, '<h1 style="color:#1e3a8a; border-bottom:1pt solid #e2e8f0; padding-bottom:10px;">$1</h1>')
-      .replace(/^## (.*$)/gm, '<h2 style="color:#1e3a8a; margin-top:20px;">$1</h2>')
+      .replace(/^# (.*$)/gm, '<h1 style="color:#1e3a8a; margin-bottom:10px; font-size: 24pt;">$1</h1>')
+      .replace(/^## (.*$)/gm, '<h2 style="color:#1e3a8a; margin-top:20px; font-size: 16pt;">$1</h2>')
       .replace(/^\*Recorded on (.*)\*$/gm, '<p style="color: #64748b; font-style: italic; margin-bottom: 20px;">Recorded on $1</p>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
       .replace(/- (.*$)/gm, '<li>$1</li>')
       .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
-      .split('\n').join('<br>');
+      .split('\n').filter(l => l.trim() !== '').join('<br>');
 
     const htmlContent = `<html><body style="font-family:Arial, sans-serif; color:#334155; line-height:1.6; padding:20px;">${htmlBody}</body></html>`;
     const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
