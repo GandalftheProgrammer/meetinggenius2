@@ -124,7 +124,17 @@ const App: React.FC = () => {
     addLog(`Cloud Storage: Syncing...`);
 
     if (blob) {
-      const audioName = `${safeBaseName} - audio`;
+      // Determine extension based on mime type to ensure Drive files are downloadable and recognized
+      let ext = 'webm';
+      const type = blob.type.toLowerCase();
+      if (type.includes('mp4') || type.includes('m4a')) ext = 'm4a';
+      else if (type.includes('wav')) ext = 'wav';
+      else if (type.includes('mp3')) ext = 'mp3';
+      else if (type.includes('aac')) ext = 'aac';
+      else if (type.includes('flac')) ext = 'flac';
+      else if (type.includes('ogg')) ext = 'ogg';
+
+      const audioName = `${safeBaseName} - audio.${ext}`;
       uploadAudioToDrive(audioName, blob).catch(() => {});
     }
 

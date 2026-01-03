@@ -223,5 +223,11 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
   return await r.json();
 };
 
-export const uploadAudioToDrive = (name: string, blob: Blob) => uploadFile(name, blob, blob.type, 'Audio', false);
+export const uploadAudioToDrive = (name: string, blob: Blob) => {
+  // Clean the MIME type: 'audio/webm;codecs=opus' -> 'audio/webm'
+  // Google Drive multipart upload rejects the codecs parameter causing 400 Bad Request
+  const cleanType = (blob.type || 'audio/webm').split(';')[0].trim();
+  return uploadFile(name, blob, cleanType, 'Audio', false);
+};
+
 export const uploadTextToDrive = (name: string, content: string, sub: 'Notes' | 'Transcripts') => uploadFile(name, convertMarkdownToHtml(content), 'text/html', sub, true);
