@@ -78,7 +78,6 @@ const createFolder = async (name: string, parentId?: string): Promise<string> =>
 
 const ensureFolder = async (sub: string): Promise<string> => {
     const main = localStorage.getItem('drive_folder_name') || 'MeetingGenius';
-    
     if (!mainFolderId) {
         if (!folderLock) {
             folderLock = (async () => {
@@ -89,33 +88,41 @@ const ensureFolder = async (sub: string): Promise<string> => {
         }
         await folderLock;
     }
-
     if (!mainFolderId) throw new Error("Main folder missing");
     if (subFolderCache[sub]) return subFolderCache[sub];
-
     const subId = await getFolderId(sub, mainFolderId) || await createFolder(sub, mainFolderId);
     subFolderCache[sub] = subId;
     return subId;
 };
 
 const convertMarkdownToHtml = (md: string): string => {
-    const innerHtml = md.trim()
+    // 1. Process block elements
+    let html = md.trim()
         .replace(/^# (.*$)/gm, '<h1 class="title">$1</h1>')
-        .replace(/^## (.*$)/gm, '<h2 class="header">$2</h2>') // Using correct group
-        .replace(/^### (.*$)/gm, '<h3 class="subheader">$3</h3>') 
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/^\*Recorded on (.*)\*$/gm, '<p class="recorded-on">Recorded on $1</p>')
+        .replace(/^## (.*$)/gm, '<h2 class="header">$1</h2>')
+        .replace(/^### (.*$)/gm, '<h3 class="subheader">$1</h3>')
+        .replace(/^\*(Recorded on .*)\*$/gm, '<p class="recorded-on">$1</p>')
         .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
-        .replace(/- (.*$)/gm, '<li>$1</li>')
-        .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
-        .split('\n')
-        .map(l => {
-            const t = l.trim();
-            if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li') || t.startsWith('<p')) return l;
-            return `<p class="body-text">${t}</p>`;
-        })
-        .filter(l => l.trim() !== '')
-        .join('');
+        .replace(/- (.*$)/gm, '<li>$1</li>');
+
+    // 2. Wrap consecutive <li> into <ul>
+    html = html.replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+
+    // 3. Process inline elements
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+    // 4. Wrap remaining lines in <p> if they are not already wrapped in a block tag
+    const lines = html.split('\n');
+    const processedLines = lines.map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        if (trimmed.startsWith('<h') || trimmed.startsWith('<ul') || trimmed.startsWith('<li') || trimmed.startsWith('<p')) {
+            return trimmed;
+        }
+        return `<p class="body-text">${trimmed}</p>`;
+    });
+
+    const finalInnerHtml = processedLines.filter(l => l !== '').join('\n');
 
     return `
 <html>
@@ -129,28 +136,31 @@ const convertMarkdownToHtml = (md: string): string => {
         }
         .title {
             color: #1e3a8a;
-            font-size: 24pt;
+            font-size: 26pt;
             font-weight: bold;
-            margin-bottom: 20pt;
-            /* Border removed as requested */
+            margin-bottom: 12pt;
+            margin-top: 0;
+            padding: 0;
         }
         .recorded-on {
             color: #64748b;
             font-style: italic;
+            font-size: 11pt;
             margin-bottom: 24pt;
+            margin-top: 0;
         }
         .header {
             color: #1e3a8a;
-            font-size: 16pt;
+            font-size: 18pt;
             font-weight: bold;
             margin-top: 24pt;
             margin-bottom: 12pt;
         }
         .subheader {
             color: #475569;
-            font-size: 13pt;
+            font-size: 14pt;
             font-weight: bold;
-            margin-top: 16pt;
+            margin-top: 18pt;
         }
         .body-text {
             font-size: 11pt;
@@ -162,15 +172,17 @@ const convertMarkdownToHtml = (md: string): string => {
         }
         ul {
             margin-bottom: 12pt;
+            margin-top: 0;
+            padding-left: 20pt;
         }
         li {
             font-size: 11pt;
-            margin-bottom: 4pt;
+            margin-bottom: 6pt;
         }
     </style>
 </head>
 <body>
-    ${innerHtml}
+    ${finalInnerHtml}
 </body>
 </html>
     `.trim();
@@ -179,16 +191,13 @@ const convertMarkdownToHtml = (md: string): string => {
 const uploadFile = async (name: string, content: string | Blob, type: string, sub: string, toDoc: boolean): Promise<any> => {
   if (!accessToken) throw new Error("No access token");
   const folderId = await ensureFolder(sub);
-  
   const meta = { 
     name: name, 
     parents: [folderId], 
     mimeType: toDoc ? 'application/vnd.google-apps.document' : type 
   };
-  
   const boundary = '-------314159265358979323846';
   const mediaContent = content instanceof Blob ? content : new Blob([content], { type });
-
   const bodyParts: (string | Blob)[] = [
     `--${boundary}\r\n`,
     'Content-Type: application/json; charset=UTF-8\r\n\r\n',
@@ -198,9 +207,7 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
     mediaContent,
     `\r\n--${boundary}--`
   ];
-
   const body = new Blob(bodyParts);
-
   const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
     method: 'POST',
     headers: { 
@@ -209,14 +216,12 @@ const uploadFile = async (name: string, content: string | Blob, type: string, su
     },
     body
   });
-  
   if (!r.ok) {
      const errText = await r.text();
      throw new Error(`Upload Failed: ${errText}`);
   }
-  
   return await r.json();
 };
 
 export const uploadAudioToDrive = (name: string, blob: Blob) => uploadFile(name, blob, blob.type, 'Audio', false);
-export const uploadTextToDrive = (name: string, content: string, sub: 'Notes' | 'Transcripts') => uploadFile(name, content, 'text/html', sub, true);
+export const uploadTextToDrive = (name: string, content: string, sub: 'Notes' | 'Transcripts') => uploadFile(name, convertMarkdownToHtml(content), 'text/html', sub, true);

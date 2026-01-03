@@ -130,16 +130,16 @@ const App: React.FC = () => {
 
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      let notesMarkdown = `# ${cleanTitle} notes\n\n`;
+      let notesMarkdown = `# ${cleanTitle} notes\n`;
       notesMarkdown += `*Recorded on ${dateString}*\n\n`;
       notesMarkdown += `${data.summary.trim()}\n\n`;
       
       if (data.conclusions && data.conclusions.length > 0) {
-          notesMarkdown += `## Conclusions & Insights\n${data.conclusions.map(i => `- ${i}`).join('\n')}\n\n`;
+          notesMarkdown += `## Conclusions & Insights\n${data.conclusions.map(i => `- ${i}`).join('\n')}\n`;
       }
       
       if (data.actionItems && data.actionItems.length > 0) {
-          notesMarkdown += `## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
+          notesMarkdown += `\n## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
       }
 
       uploadTextToDrive(notesName, notesMarkdown, 'Notes').catch(() => {});
@@ -147,7 +147,7 @@ const App: React.FC = () => {
 
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      let transcriptMarkdown = `# ${cleanTitle} transcript\n\n`;
+      let transcriptMarkdown = `# ${cleanTitle} transcript\n`;
       transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription.trim()}`;
       uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
     }
