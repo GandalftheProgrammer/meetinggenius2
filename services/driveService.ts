@@ -99,30 +99,29 @@ const ensureFolder = async (sub: string): Promise<string> => {
 };
 
 const convertMarkdownToHtml = (md: string): string => {
-    // Basic Markdown conversion with targeted HTML for Google Docs
     const innerHtml = md.trim()
         .replace(/^# (.*$)/gm, '<h1 class="title">$1</h1>')
-        .replace(/^## (.*$)/gm, '<h2 class="header">$2</h2>')
-        .replace(/^### (.*$)/gm, '<h3 class="subheader">$3</h3>')
+        .replace(/^## (.*$)/gm, '<h2 class="header">$1</h2>') // Fixed: used $1 instead of $2
+        .replace(/^### (.*$)/gm, '<h3 class="subheader">$1</h3>') // Fixed: used $1 instead of $3
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^\*Recorded on (.*)\*$/gm, '<p style="color: #64748b; font-style: italic; margin-bottom: 20px;">Recorded on $1</p>') // Handle the date line specifically
         .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
         .replace(/- (.*$)/gm, '<li>$1</li>')
         .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
         .split('\n')
         .map(l => {
             const t = l.trim();
-            if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li')) return l;
+            if (!t || t.startsWith('<h') || t.startsWith('<ul') || t.startsWith('<li') || t.startsWith('<p')) return l;
             return `<p class="body-text">${l}</p>`;
         })
         .join('');
 
-    // Wrap with a professional style block that Google Docs import respects
     return `
 <html>
 <head>
     <style>
         body {
-            font-family: 'Roboto', 'Arial', sans-serif;
+            font-family: 'Arial', sans-serif;
             color: #334155;
             line-height: 1.6;
             margin: 40px;

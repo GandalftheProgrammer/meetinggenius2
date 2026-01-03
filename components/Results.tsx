@@ -24,18 +24,19 @@ const Results: React.FC<ResultsProps> = ({
   initialMode = 'NOTES_ONLY',
   sessionDateString = ''
 }) => {
-  // Track visibility of each column
   const [showNotes, setShowNotes] = useState(initialMode !== 'TRANSCRIPT_ONLY');
   const [showTranscript, setShowTranscript] = useState(initialMode !== 'NOTES_ONLY');
 
   const hasNotes = data.summary && data.summary.length > 0;
   const hasTranscript = data.transcription && data.transcription.length > 0;
 
-  // Final check to remove any brackets from title for file names
   const cleanTitle = title.replace(/[()]/g, '').trim();
+  const baseName = `${cleanTitle} on ${sessionDateString}`;
 
   const notesMarkdown = `
-# Meeting Notes: ${cleanTitle}
+# ${baseName} - notes
+
+*Recorded on ${sessionDateString}*
 
 ## Summary
 ${data.summary}
@@ -47,17 +48,14 @@ ${data.conclusions.map(d => `- ${d}`).join('\n')}
 ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   `.trim();
 
-  const transcriptMarkdown = `# Transcript: ${cleanTitle}\n\n${data.transcription}`;
+  const transcriptMarkdown = `# ${baseName} - transcription\n\n*Recorded on ${sessionDateString}*\n\n${data.transcription}`;
 
   const downloadBlob = (blob: Blob, suffix: string) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     const extension = blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm';
-    
-    // Strict format: [title] on [date] at [time] - [suffix]
-    const fileName = `${cleanTitle} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
-    
+    const fileName = `${baseName} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
     link.download = `${fileName}.${extension}`;
     document.body.appendChild(link);
     link.click();
@@ -69,6 +67,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     const htmlBody = markdown
       .replace(/^# (.*$)/gm, '<h1 style="color:#1e3a8a; border-bottom:1pt solid #e2e8f0; padding-bottom:10px;">$1</h1>')
       .replace(/^## (.*$)/gm, '<h2 style="color:#1e3a8a; margin-top:20px;">$1</h2>')
+      .replace(/^\*Recorded on (.*)\*$/gm, '<p style="color: #64748b; font-style: italic; margin-bottom: 20px;">Recorded on $1</p>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
       .replace(/- (.*$)/gm, '<li>$1</li>')
@@ -80,10 +79,7 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    
-    // Strict format: [title] on [date] at [time] - [suffix]
-    const fileName = `${cleanTitle} on ${sessionDateString} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
-    
+    const fileName = `${baseName} - ${suffix}`.replace(/[/\\?%*:|"<>]/g, '-');
     link.download = `${fileName}.doc`;
     link.click();
   };
@@ -115,12 +111,11 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
         <div className="flex flex-wrap items-center gap-2">
            {audioBlob && <button onClick={() => downloadBlob(audioBlob, 'audio')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><FileAudio className="w-4 h-4" />Audio</button>}
            {hasNotes && <button onClick={() => downloadAsDoc(notesMarkdown, 'notes')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Notes</button>}
-           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcript')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
+           {hasTranscript && <button onClick={() => downloadAsDoc(transcriptMarkdown, 'transcription')} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-sm font-semibold transition-all shadow-sm"><Download className="w-4 h-4" />Transcript</button>}
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[calc(100vh-250px)] min-h-[500px]">
-        {/* NOTES COLUMN */}
         <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
             <ListChecks className="w-5 h-5 text-blue-500" />
@@ -133,7 +128,6 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
           </div>
         </div>
 
-        {/* TRANSCRIPT COLUMN */}
         <div className="flex flex-col h-full bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
             <FileText className="w-5 h-5 text-purple-500" />
