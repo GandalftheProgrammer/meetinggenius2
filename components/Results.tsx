@@ -74,30 +74,32 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
       .replace(/- \[ \] (.*$)/gm, '<li style="margin-bottom:0;">☐ $1</li>')
       .replace(/- (.*$)/gm, '<li style="margin-bottom:0;">$1</li>');
 
-    // 2. Wrap lists in ul with specific margins. 
-    // CRITICAL FIX: We use a callback to remove newlines from the list content immediately.
-    // This ensures the <ul>...</ul> block is treated as a single line, preventing the split('\n') logic
-    // from breaking the list apart or wrapping closing tags in <p> tags.
-    htmlBody = htmlBody.replace(/((?:<li.*?>.*?<\/li>\s*)+)/g, (match) => {
-        const cleanList = match.replace(/\n/g, ''); // Remove internal newlines
-        return `<ul style="margin-top:0; margin-bottom:12px; padding-left:20px;">${cleanList}</ul>`;
-    });
+    // 2. GLUE ADJACENT LIST ITEMS
+    // This looks for a closing </li> followed by ANY amount of whitespace (newlines, spaces)
+    // and then an opening <li. It replaces the whitespace with NOTHING, effectively gluing them.
+    // This ensures <li>Item 1</li>   \n   <li>Item 2</li> becomes <li>Item 1</li><li>Item 2</li>
+    htmlBody = htmlBody.replace(/<\/li>\s+(?=<li)/g, '</li>');
 
-    // 3. Process remaining text lines into paragraphs
+    // 3. WRAP LISTS IN UL
+    // Now we simply look for chains of list items. Since they are glued, a simple greedy regex works.
+    htmlBody = htmlBody.replace(/((?:<li[\s\S]*?<\/li>)+)/g, '<ul style="margin-top:0; margin-bottom:12px; padding-left:20px;">$1</ul>');
+
+    // 4. Process remaining text lines into paragraphs
     const lines = htmlBody.split('\n');
     const processedLines = lines.map(line => {
         const trimmed = line.trim();
         if (!trimmed) return '';
         
         // If line is already a block tag (h1, h2, ul, li, p), preserve it
-        // Added checks for closing tags just in case, though the list collapse above solves the main issue.
+        // Note: checking for startsWith <li is theoretically not needed if step 3 worked perfectly,
+        // but kept for safety.
         if (
             trimmed.startsWith('<h1') || 
             trimmed.startsWith('<h2') || 
             trimmed.startsWith('<p') || 
             trimmed.startsWith('<ul') || 
             trimmed.startsWith('<li') ||
-            trimmed.startsWith('</ul') // Safety net
+            trimmed.startsWith('</ul')
         ) {
             return trimmed;
         }
