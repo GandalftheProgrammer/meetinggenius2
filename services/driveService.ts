@@ -115,14 +115,14 @@ const convertMarkdownToHtml = (md: string): string => {
     const lines = html.split('\n');
     const processedLines = lines.map(line => {
         const trimmed = line.trim();
-        if (!trimmed) return ''; // Mark empty for filtering
+        if (!trimmed) return '';
         if (trimmed.startsWith('<h') || trimmed.startsWith('<ul') || trimmed.startsWith('<li') || trimmed.startsWith('<p')) {
             return trimmed;
         }
         return `<p class="body-text">${trimmed}</p>`;
     });
 
-    const finalInnerHtml = processedLines.filter(l => l.trim() !== '').join('\n');
+    const finalInnerHtml = processedLines.filter(l => l !== '').join('\n');
 
     return `
 <html>
@@ -154,7 +154,7 @@ const convertMarkdownToHtml = (md: string): string => {
             font-size: 18pt;
             font-weight: bold;
             margin-top: 24pt;
-            margin-bottom: 8pt;
+            margin-bottom: 12pt;
         }
         .subheader {
             color: #475569;
@@ -177,7 +177,7 @@ const convertMarkdownToHtml = (md: string): string => {
         }
         li {
             font-size: 11pt;
-            margin-bottom: 4pt;
+            margin-bottom: 6pt;
         }
     </style>
 </head>
