@@ -64,17 +64,45 @@ ${data.actionItems.map(item => `- [ ] ${item}`).join('\n')}
   };
 
   const downloadAsDoc = (markdown: string, suffix: string) => {
-    const htmlBody = markdown
-      .replace(/^# (.*$)/gm, '<h1 style="color:#1e3a8a; margin-bottom:10px; font-size: 24pt;">$1</h1>')
-      .replace(/^## (.*$)/gm, '<h2 style="color:#1e3a8a; margin-top:20px; font-size: 16pt;">$1</h2>')
+    // 1. Replace block elements with HTML tags including INLINE STYLES for Word compatibility
+    let htmlBody = markdown
+      .replace(/^# (.*$)/gm, '<h1 style="color:#1e3a8a; margin-bottom:12px; font-size: 24pt;">$1</h1>')
+      .replace(/^## (.*$)/gm, '<h2 style="color:#1e3a8a; margin-top:24px; margin-bottom:12px; font-size: 16pt;">$1</h2>')
       .replace(/^\*Recorded on (.*)\*$/gm, '<p style="color: #64748b; font-style: italic; margin-bottom: 20px;">Recorded on $1</p>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/- \[ \] (.*$)/gm, '<li>☐ $1</li>')
-      .replace(/- (.*$)/gm, '<li>$1</li>')
-      .replace(/((?:<li>.*?<\/li>\s*)+)/g, '<ul>$1</ul>')
-      .split('\n').filter(l => l.trim() !== '').join('<br>');
+      // Tight spacing for list items (margin-bottom:0) to prevent double spacing in Word
+      .replace(/- \[ \] (.*$)/gm, '<li style="margin-bottom:0;">☐ $1</li>')
+      .replace(/- (.*$)/gm, '<li style="margin-bottom:0;">$1</li>');
 
-    const htmlContent = `<html><body style="font-family:Arial, sans-serif; color:#334155; line-height:1.6; padding:20px;">${htmlBody}</body></html>`;
+    // 2. Wrap lists in ul with specific margins. 
+    // Regex matches <li> elements with attributes (due to step 1)
+    htmlBody = htmlBody.replace(/((?:<li.*?>.*?<\/li>\s*)+)/g, '<ul style="margin-top:0; margin-bottom:12px; padding-left:20px;">$1</ul>');
+
+    // 3. Process remaining text lines into paragraphs
+    const lines = htmlBody.split('\n');
+    const processedLines = lines.map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        
+        // If line is already a block tag (h1, h2, ul, li, p), preserve it
+        if (
+            trimmed.startsWith('<h1') || 
+            trimmed.startsWith('<h2') || 
+            trimmed.startsWith('<p') || 
+            trimmed.startsWith('<ul') || 
+            trimmed.startsWith('<li')
+        ) {
+            return trimmed;
+        }
+        
+        // Wrap plain text (summaries, transcripts) in styled paragraphs
+        return `<p style="margin-bottom: 12px;">${trimmed}</p>`;
+    });
+
+    // Join with EMPTY STRING to avoid "ghost" text nodes causing extra spacing
+    const finalHtmlBody = processedLines.filter(l => l).join('');
+
+    const htmlContent = `<html><body style="font-family:Arial, sans-serif; color:#334155; line-height:1.6; padding:20px;">${finalHtmlBody}</body></html>`;
     const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
