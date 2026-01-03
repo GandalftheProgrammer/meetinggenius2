@@ -130,25 +130,36 @@ const App: React.FC = () => {
 
     if (data.summary || data.actionItems.length > 0) {
       const notesName = `${safeBaseName} - notes`;
-      let notesMarkdown = `# ${cleanTitle} notes\n`;
-      notesMarkdown += `*Recorded on ${dateString}*\n\n`;
-      notesMarkdown += `${data.summary.trim()}\n\n`;
+      
+      // Builder approach for perfectly consistent spacing
+      const sections = [];
+      sections.push(`# ${cleanTitle} notes`);
+      sections.push(`*Recorded on ${dateString}*`);
+      
+      if (data.summary) {
+        sections.push(data.summary.trim());
+      }
       
       if (data.conclusions && data.conclusions.length > 0) {
-          notesMarkdown += `## Conclusions & Insights\n${data.conclusions.map(i => `- ${i}`).join('\n')}\n`;
+          sections.push(`## Conclusions & Insights\n${data.conclusions.map(i => `- ${i.trim()}`).join('\n')}`);
       }
       
       if (data.actionItems && data.actionItems.length > 0) {
-          notesMarkdown += `\n## Action Items\n${data.actionItems.map(i => `- ${i}`).join('\n')}`;
+          sections.push(`## Action Items\n${data.actionItems.map(i => `- ${i.trim()}`).join('\n')}`);
       }
 
+      const notesMarkdown = sections.join('\n\n');
       uploadTextToDrive(notesName, notesMarkdown, 'Notes').catch(() => {});
     }
 
     if (data.transcription) {
       const transcriptName = `${safeBaseName} - transcription`;
-      let transcriptMarkdown = `# ${cleanTitle} transcript\n`;
-      transcriptMarkdown += `*Recorded on ${dateString}*\n\n${data.transcription.trim()}`;
+      const sections = [];
+      sections.push(`# ${cleanTitle} transcript`);
+      sections.push(`*Recorded on ${dateString}*`);
+      sections.push(data.transcription.trim());
+      
+      const transcriptMarkdown = sections.join('\n\n');
       uploadTextToDrive(transcriptName, transcriptMarkdown, 'Transcripts').catch(() => {});
     }
   };
